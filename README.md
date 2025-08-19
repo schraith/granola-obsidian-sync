@@ -6,7 +6,7 @@ Simple tool for syncing Granola meeting notes to Obsidian. Single file, zero abs
 
 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/granola-obsidian-sync.git
+git clone https://github.com/joshroman/granola-obsidian-sync.git
 cd granola-obsidian-sync
 ```
 
