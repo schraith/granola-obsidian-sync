@@ -2,8 +2,8 @@
 
 - Simple tool for syncing Granola meeting notes to Obsidian
 - Applies YAML attributes
-- 
-- Processes and adds Granola transcript to make it more readable 
+- Includes all panel (template) content in Markdown format
+- Includes Granola transcript w/ additional processing to make it more readable 
 
 ## Setup
 
