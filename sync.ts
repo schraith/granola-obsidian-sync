@@ -6,6 +6,7 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import matter from 'gray-matter';
 import { processTranscript } from './transcript-processor';
+import { processPanels } from './panel-processor';
 
 // --- CONFIGURATION ---
 // All user-configurable values are sourced from environment variables.
@@ -46,6 +47,9 @@ const VAULT_PATH = config.obsidianVaultPath;
 const TOKEN_PATH = config.granolaAuthPath;
 const CACHE_PATH = config.cachePath;
 
+// Template identification for panel processing
+const JOSH_TEMPLATE_SLUG = 'b491d27c-1106-4ebf-97c5-d5129742945c';
+
 // TYPES
 interface GranolaDoc {
   id: string;
@@ -73,6 +77,15 @@ interface CalendarEvent {
   status: string;
 }
 
+interface Panel {
+  id: string;
+  title: string;
+  template_slug: string;
+  original_content: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // UNIFIED MEETING DATA
 interface MeetingData {
   id: string;
@@ -86,6 +99,7 @@ interface MeetingData {
   transcript?: string;
   meetingUrl?: string;
   durationMin?: number;
+  panelContent?: string;
 }
 
 // PUSHOVER NOTIFICATION - FIRE AND FORGET
@@ -131,6 +145,29 @@ async function extractEventsFromCache(): Promise<CalendarEvent[]> {
   }
 }
 
+// CONTENT VALIDATION FUNCTION
+function hasContent(transcriptData: any, panels?: Panel[]): boolean {
+  // Check transcript segments
+  const segments = Array.isArray(transcriptData) ? transcriptData :
+                  transcriptData?.segments || 
+                  transcriptData?.transcript?.segments || 
+                  [];
+  
+  const hasTranscriptContent = segments.length > 0;
+  
+  // Check panels
+  const hasPanelContent = panels && panels.length > 0 && 
+    panels.some(p => p.original_content && p.original_content.trim().length > 0);
+  
+  return hasTranscriptContent || hasPanelContent || false;
+}
+
+// CHECK IF MEETING IS IN THE PAST
+function isPastMeeting(meeting: GranolaDoc): boolean {
+  const meetingTime = new Date(meeting.created_at);
+  return meetingTime < new Date();
+}
+
 // SHARED FUNCTION TO PROCESS AND WRITE MEETINGS
 async function processAndWriteMeeting(data: MeetingData): Promise<boolean> {
   const date = data.startTime;
@@ -168,14 +205,21 @@ async function processAndWriteMeeting(data: MeetingData): Promise<boolean> {
     status: data.status,
     privacy: 'internal',
     calendar_event_id: data.id,
-    meeting_url: data.meetingUrl || ''
+    meeting_url: data.meetingUrl || '',
+    transcript_url: data.status === 'filed' ? `https://notes.granola.ai/d/${data.id}` : ''
   };
 
   // Create content based on status
   const content = data.status === 'filed' && data.transcript
     ? `# ${data.title}
 
+## Agenda
+
+## Tasks
+
 ## Summary
+
+${data.panelContent || ''}
 
 ## Transcript
 ${data.transcript}`
@@ -196,6 +240,24 @@ ${data.transcript}`
   
   console.log(data.status === 'filed' ? `✓ ${data.title}` : `📅 ${data.title} (${dateStr})`);
   return true;
+}
+
+// PANEL API FUNCTION
+async function getPanels(documentId: string, token: string): Promise<Panel[]> {
+  const response = await fetch(`${API_BASE}/get-document-panels`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ document_id: documentId })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch panels: ${response.status}`);
+  }
+
+  return await response.json();
 }
 
 // MAIN SYNC FUNCTION
@@ -240,6 +302,7 @@ async function main(): Promise<void> {
   }
 
   let processedCount = 0;
+  let skippedCount = 0;
   let futureCount = 0;
 
   // 3. PROCESS PAST MEETINGS
@@ -275,8 +338,42 @@ async function main(): Promise<void> {
     const metadata: DocMetadata = await metaResponse.json();
     const transcriptData = await transcriptResponse.json();
     
+    // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
+    if (isPastMeeting(meeting)) {
+      // Check if this meeting has content
+      let panels: Panel[] = [];
+      try {
+        panels = await getPanels(meeting.id, token);
+      } catch (error) {
+        // Panel fetch failed, continue with transcript-only check
+      }
+      
+      if (!hasContent(transcriptData, panels)) {
+        console.log(`⏭️  Skipping empty: ${meeting.title} (0 segments, ${panels.length} panels)`);
+        skippedCount++;
+        continue;
+      }
+    }
+    
     // Process transcript to add speaker labels and clean up
     const processedTranscript = processTranscript(transcriptData);
+    
+    // Panel processing with graceful failure
+    let panelContent = '';
+    try {
+      const panels = await getPanels(meeting.id, token);
+      if (panels && panels.length > 0) {
+        // Sort panels: Josh Template first
+        const sortedPanels = panels.sort((a, b) => 
+          (b.template_slug === JOSH_TEMPLATE_SLUG ? 1 : 0) - 
+          (a.template_slug === JOSH_TEMPLATE_SLUG ? 1 : 0)
+        );
+        panelContent = processPanels(sortedPanels);
+      }
+    } catch (error) {
+      console.error(`Failed to process panels for "${meeting.title}":`, error);
+      // Continue without panels - don't break existing functionality
+    }
     
     // Normalize data for shared function
     const meetingData: MeetingData = {
@@ -287,7 +384,8 @@ async function main(): Promise<void> {
       organizer: metadata.creator?.name || '',
       location: '',
       status: 'filed',
-      transcript: processedTranscript
+      transcript: processedTranscript,
+      panelContent: panelContent
     };
     
     if (await processAndWriteMeeting(meetingData)) {
@@ -346,6 +444,9 @@ async function main(): Promise<void> {
   // 5. SUCCESS MESSAGE
   const endTimestamp = new Date().toISOString();
   console.log(`\n[${endTimestamp}] SUCCESS: ${processedCount} past meetings, ${futureCount} future meetings synced`);
+  if (skippedCount > 0) {
+    console.log(`⏭️  Skipped: ${skippedCount} empty meetings (no transcript or panels)`);
+  }
 }
 
 // EXECUTION

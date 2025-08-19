@@ -37,6 +37,7 @@ export function processTranscript(transcriptData: any): string {
 
   // Extract segments array from various possible structures
   const segments: TranscriptSegment[] = 
+    Array.isArray(transcriptData) ? transcriptData :  // Direct array case
     transcriptData?.segments || 
     transcriptData?.transcript?.segments || 
     [];
