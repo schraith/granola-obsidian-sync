@@ -38,7 +38,7 @@ All paths and tokens are configured via environment variables in `.env`:
 ### File Organization
 - Main directory: Keep clean with only essential files
 - `.cache/`: Cache files (git-ignored)
-- `/temp/`: All debug scripts, test files, and temporary utilities go here
+- `/temp/`: All debug scripts, test files, and temporary utilities go here (git-tracked directory, all files inside are git-ignored except .gitkeep)
 - `/logs/`: Sync operation logs (if logging is enabled)
 
 ## Sync Behavior
