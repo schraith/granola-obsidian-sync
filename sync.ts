@@ -30,6 +30,7 @@ const config = {
   granolaAuthPath: resolvePath(process.env.GRANOLA_AUTH_PATH!),
   obsidianVaultPath: resolvePath(process.env.OBSIDIAN_VAULT_MEETINGS_PATH!),
   cachePath: join(resolvePath(process.env.CACHE_DIR_PATH!), 'cache-v3.json'),
+  meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || '50'),
   // Pushover config for future use
   pushover: {
     userKey: process.env.PUSHOVER_USER_KEY,
@@ -84,6 +85,25 @@ interface MeetingData {
   transcript?: string;
   meetingUrl?: string;
   durationMin?: number;
+}
+
+// PUSHOVER NOTIFICATION - FIRE AND FORGET
+function sendPushover(title: string, message: string): void {
+  if (!config.pushover.userKey || !config.pushover.apiToken) return;
+  
+  fetch('https://api.pushover.net/1/messages.json', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      token: config.pushover.apiToken,
+      user: config.pushover.userKey,
+      title,
+      message,
+      priority: '1'
+    })
+  }).catch(err => {
+    console.error(`Pushover failed: ${err.message}`);
+  });
 }
 
 // SIMPLIFIED CACHE PARSING - NO RECURSIVE FALLBACK
@@ -197,15 +217,26 @@ async function main(): Promise<void> {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ limit: 100 })
+    body: JSON.stringify({ limit: config.meetingsLimit })
   });
 
   if (!docsResponse.ok) {
-    throw new Error(`Docs API failed: ${docsResponse.status} ${docsResponse.statusText}`);
+    const error = `Docs API failed: ${docsResponse.status} ${docsResponse.statusText}`;
+    sendPushover('Granola Sync FAILED', error);
+    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for Pushover
+    throw new Error(error);
   }
 
   const meetings: GranolaDoc[] = await docsResponse.json();
   console.log(`   Found ${meetings.length} processed meetings`);
+
+  // API should ALWAYS return past meetings
+  if (meetings.length === 0) {
+    const error = 'API returned 0 meetings - API is likely broken';
+    sendPushover('Granola Sync FAILED', error);
+    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for Pushover
+    throw new Error(error);
+  }
 
   let processedCount = 0;
   let futureCount = 0;
@@ -234,7 +265,9 @@ async function main(): Promise<void> {
     ]);
 
     if (!metaResponse.ok || !transcriptResponse.ok) {
-      console.error(`Failed to fetch data for ${meeting.title} - skipping`);
+      const error = `Failed to fetch data for ${meeting.title} - skipping`;
+      console.error(error);
+      sendPushover('Granola Sync Warning', error);
       continue;
     }
 
@@ -317,5 +350,11 @@ main().catch(error => {
   console.error(`[${errorTimestamp}] === SYNC FAILED ===`);
   console.error(error);
   console.error('===================');
-  process.exit(1);
+  
+  // Send Pushover with stack trace
+  const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
+  sendPushover('Granola Sync CRASHED', `Script crashed at ${errorTimestamp}\n\n${errorMessage}`);
+  
+  // Give Pushover time to send before exiting
+  setTimeout(() => process.exit(1), 1000);
 });
