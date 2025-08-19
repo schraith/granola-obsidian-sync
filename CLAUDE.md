@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a simple tool for syncing Granola meeting notes to Obsidian. The entire sync logic is contained in a single `sync.ts` file with zero abstractions, no retry logic, and fail-loud behavior.
+This is a simple tool for syncing Granola meeting notes to Obsidian. The sync logic is split into two focused files: `sync.ts` for orchestration and `transcript-processor.ts` for transcript processing. Maintains zero abstractions, no retry logic, and fail-loud behavior.
 
 ## Core Commands
 
@@ -18,8 +18,9 @@ bun sync.ts
 
 ## Architecture
 
-### Single File Design
-- **sync.ts**: Contains all sync logic inline - no abstractions, no separate modules
+### Two-File Design
+- **sync.ts**: Orchestrates the sync - fetches data, writes files
+- **transcript-processor.ts**: Processes transcripts - adds speaker labels (Me/Them), removes duplicates, groups by speaker
 - Configuration via environment variables (see `.env.example`)
 - Crashes immediately on any error (no retry logic)
 - Skips existing files (no overwrite logic)
@@ -47,6 +48,7 @@ All paths and tokens are configured via environment variables in `.env`:
    - Generates filename: `YYYY-MM-DD HH-MM {title} -- {id}.md`
    - Skips if file already exists
    - Fetches metadata and transcript
+   - **Processes transcript**: Adds speaker labels (Me/Them), removes duplicates, groups text by speaker
    - Creates Markdown with YAML frontmatter
    - Writes to Obsidian vault
 

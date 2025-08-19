@@ -5,6 +5,7 @@ import { readFile, writeFile, mkdir, access } from 'fs/promises';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import matter from 'gray-matter';
+import { processTranscript } from './transcript-processor';
 
 // --- CONFIGURATION ---
 // All user-configurable values are sourced from environment variables.
@@ -274,6 +275,9 @@ async function main(): Promise<void> {
     const metadata: DocMetadata = await metaResponse.json();
     const transcriptData = await transcriptResponse.json();
     
+    // Process transcript to add speaker labels and clean up
+    const processedTranscript = processTranscript(transcriptData);
+    
     // Normalize data for shared function
     const meetingData: MeetingData = {
       id: meeting.id,
@@ -283,7 +287,7 @@ async function main(): Promise<void> {
       organizer: metadata.creator?.name || '',
       location: '',
       status: 'filed',
-      transcript: transcriptData.transcript || ''
+      transcript: processedTranscript
     };
     
     if (await processAndWriteMeeting(meetingData)) {
