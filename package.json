@@ -1,0 +1,17 @@
+{
+  "name": "granola-sync",
+  "version": "1.0.0",
+  "description": "Brutal simplification: Granola to Obsidian sync",
+  "type": "module",
+  "scripts": {
+    "sync": "bun run sync.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "latest"
+  }
+}
