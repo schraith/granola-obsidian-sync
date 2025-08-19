@@ -1,6 +1,9 @@
 # Granola to Obsidian Sync
 
-Simple tool for syncing Granola meeting notes to Obsidian. Single file, zero abstractions, fail-loud behavior.
+- Simple tool for syncing Granola meeting notes to Obsidian
+- Applies YAML attributes
+- 
+- Processes and adds Granola transcript to make it more readable 
 
 ## Setup
 
