@@ -170,14 +170,21 @@ function isPastMeeting(meeting: GranolaDoc): boolean {
 
 // SHARED FUNCTION TO PROCESS AND WRITE MEETINGS
 async function processAndWriteMeeting(data: MeetingData): Promise<boolean> {
-  const date = data.startTime;
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const monthName = date.toLocaleDateString('en-US', { month: 'long' });
-  const day = String(date.getDate()).padStart(2, '0');
-  const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
-  const dateStr = date.toISOString().split('T')[0] + ' ' + 
-                 date.toTimeString().slice(0, 5).replace(':', '-');
+  // Convert to Eastern timezone for folder structure (use direct toLocaleDateString with timezone)
+  const year = parseInt(data.startTime.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/New_York' }));
+  const month = String(parseInt(data.startTime.toLocaleDateString('en-US', { month: 'numeric', timeZone: 'America/New_York' }))).padStart(2, '0');
+  const monthName = data.startTime.toLocaleDateString('en-US', { month: 'long', timeZone: 'America/New_York' });
+  const day = String(parseInt(data.startTime.toLocaleDateString('en-US', { day: 'numeric', timeZone: 'America/New_York' }))).padStart(2, '0');
+  const dayName = data.startTime.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/New_York' });
+  
+  // For filename timestamp, use Eastern timezone as well
+  const easternDateStr = data.startTime.toLocaleDateString('en-US', { 
+    year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'America/New_York' 
+  }).replace(/\//g, '-');
+  const easternTimeStr = data.startTime.toLocaleTimeString('en-US', { 
+    hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' 
+  }).replace(':', '-');
+  const dateStr = `${easternDateStr} ${easternTimeStr}`;
 
   const cleanTitle = data.title.replace(/[^\w\s-]/g, '').replace(/\s+/g, ' ').trim();
   const shortId = data.id.substring(0, 8);

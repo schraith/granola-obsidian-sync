@@ -57,9 +57,11 @@ build/Release
 
 # Temporary folders
 tmp/
-temp/
-/temp/
 /logs/
+
+# Temp directory - track the folder but ignore all files except .gitkeep
+temp/*
+!temp/.gitkeep
 
 # Project specific
 exports/
