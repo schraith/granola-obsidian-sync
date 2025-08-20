@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import 'dotenv/config';
+
 /**
  * Transcript Processing for Granola to Obsidian Sync
  * 
@@ -215,11 +217,11 @@ function formatTranscript(segments: ProcessedSegment[]): string {
 
 // MEETING FILTERING FUNCTIONS
 
-const JOSH_EMAILS = new Set([
-  'josh@omaihq.com',
-  'josh@mindshiftrecovery.org',
-  'joshroman@gmail.com'
-]);
+const OWNER_EMAILS = new Set(
+  (process.env.OWNER_EMAILS || 'josh@omaihq.com,josh@mindshiftrecovery.org,joshroman@gmail.com')
+    .split(',')
+    .map(email => email.trim())
+);
 
 
 /**
@@ -239,11 +241,11 @@ export function shouldSkipPastMeeting(meeting: {
     return { skip: true, reason: 'No attendees (solo meeting)' };
   }
   
-  // Check if all attendees are Josh's email addresses
-  const nonJoshAttendees = attendees.filter(a => a.email && !JOSH_EMAILS.has(a.email));
+  // Check if all attendees are owner's email addresses
+  const nonOwnerAttendees = attendees.filter(a => a.email && !OWNER_EMAILS.has(a.email));
   
-  if (nonJoshAttendees.length === 0) {
-    return { skip: true, reason: 'Solo meeting (only Josh\'s emails)' };
+  if (nonOwnerAttendees.length === 0) {
+    return { skip: true, reason: 'Solo meeting (only owner\'s emails)' };
   }
   
   // Check for empty transcript
