@@ -251,7 +251,7 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
   const easternDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   const easternTimeStr = data.startTime.toLocaleTimeString('en-US', { 
     hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' 
-  }).replace(':', '-');
+  }).replace(':', '');
   const dateStr = `${easternDateStr} ${easternTimeStr}`;
 
   // Use existing file path if updating, otherwise create new path
@@ -407,7 +407,22 @@ async function main(): Promise<void> {
       console.log(`⏭️  Already exists: ${meeting.title}`);
       continue;
     }
-    // Fetch metadata and transcript first (to avoid unnecessary API calls if file exists)
+    
+    // Check if meeting has panels (required for sync)
+    let panels: Panel[] = [];
+    try {
+      panels = await getPanels(meeting.id, token);
+    } catch (error) {
+      console.log(`⚠️  Failed to fetch panels for ${meeting.title} - skipping`);
+      continue;
+    }
+
+    if (!panels || panels.length === 0) {
+      console.log(`⏳ No panels yet: ${meeting.title}`);
+      continue;
+    }
+    
+    // Fetch metadata and transcript
     const [metaResponse, transcriptResponse] = await Promise.all([
       fetch(`${API_BASE}/get-document-metadata`, {
         method: 'POST',
@@ -453,14 +468,6 @@ async function main(): Promise<void> {
     
     // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
     if (isPastMeeting(meeting)) {
-      // Check if this meeting has content
-      let panels: Panel[] = [];
-      try {
-        panels = await getPanels(meeting.id, token);
-      } catch (error) {
-        // Panel fetch failed, continue with transcript-only check
-      }
-      
       if (!hasContent(transcriptData, panels)) {
         console.log(`⏭️  Skipping empty: ${meeting.title} (0 segments, ${panels.length} panels)`);
         skippedCount++;
@@ -468,10 +475,9 @@ async function main(): Promise<void> {
       }
     }
     
-    // Panel processing with graceful failure
+    // Panel processing using already fetched panels
     let panelContent = '';
     try {
-      const panels = await getPanels(meeting.id, token);
       if (panels && panels.length > 0) {
         // Sort panels: Josh Template first
         const sortedPanels = panels.sort((a, b) => 
