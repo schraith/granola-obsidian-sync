@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a simple tool for syncing Granola meeting notes to Obsidian. The sync logic is split into two focused files: `sync.ts` for orchestration and `transcript-processor.ts` for transcript processing. Maintains zero abstractions, no retry logic, and fail-loud behavior.
+This is a simple tool for syncing Granola meeting notes to Obsidian. It fetches past meetings with transcripts from the Granola API and creates organized Markdown files in your Obsidian vault. The sync logic is split into two focused files: `sync.ts` for orchestration and `transcript-processor.ts` for transcript processing. Maintains zero abstractions, no retry logic, and fail-loud behavior.
 
 IMPORTANT! All file and meeting operations occur in 'America/New York' (Eastern US) time zone. ALWAYS use this time zone for date operations in this project - never use UTC for any user-visible information, files, folders, or metadata.
 
@@ -31,34 +31,31 @@ bun sync.ts
 All paths and tokens are configured via environment variables in `.env`:
 - **GRANOLA_AUTH_PATH**: Path to Granola's supabase.json auth file
 - **OBSIDIAN_VAULT_MEETINGS_PATH**: Where meeting notes are saved in Obsidian
-- **CACHE_DIR_PATH**: Directory for cache files
 - **PUSHOVER_USER_KEY** & **PUSHOVER_API_TOKEN**: Optional error notifications
 - **API Base**: `https://api.granola.ai/v1` (hardcoded as it's unlikely to change)
 
 ### File Organization
 - Main directory: Keep clean with only essential files
-- `.cache/`: Cache files (git-ignored)
 - `/temp/`: All debug scripts, test files, and temporary utilities go here (git-tracked directory, all files inside are git-ignored except .gitkeep)
 - `/logs/`: Sync operation logs (if logging is enabled)
 
 ## Sync Behavior
 
 1. Reads auth token from Granola app support directory
-2. Fetches last 100 meetings from Granola API
-3. For each meeting:
+2. Fetches past meetings from Granola API (configurable limit, default 50)
+3. For each meeting with transcript:
+   - Skips solo meetings and meetings without transcripts
    - Creates year/month folder structure in Obsidian vault
    - Generates filename: `YYYY-MM-DD HH-MM {title} -- {id}.md`
    - Skips if file already exists
-   - Fetches metadata and transcript
    - **Processes transcript**: Adds speaker labels (Me/Them), removes duplicates, groups text by speaker
-   - Creates Markdown with YAML frontmatter
+   - Creates Markdown with YAML frontmatter (status: filed)
    - Writes to Obsidian vault
 
 ## Failure Behavior 
 
 - The Granola API is under active development with frequent breaking changes to the API endpoints, authentication, etc.
 - The API should always return past meetings (even if they are all duplicates of meetings that have already been synced to Obsidian)
-- The cache should always return future meetings (even if they are all duplicates of meetings that have already been synced to Obsidian)
 - "0 meetings returned" = failure
 - The script should send a Pushover notification via the Pushover API (https://pushover.net/api) in case of error so that the script can be reviewed and updated
 

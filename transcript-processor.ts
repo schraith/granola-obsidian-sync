@@ -212,3 +212,50 @@ function formatTranscript(segments: ProcessedSegment[]): string {
 
   return lines.join('\n');
 }
+
+// MEETING FILTERING FUNCTIONS
+
+const JOSH_EMAILS = new Set([
+  'josh@omaihq.com',
+  'josh@mindshiftrecovery.org',
+  'joshroman@gmail.com'
+]);
+
+
+/**
+ * Check if a past meeting (from API) should be skipped
+ * Returns { skip: true, reason: string } if should skip, { skip: false } otherwise
+ */
+export function shouldSkipPastMeeting(meeting: {
+  attendees?: Array<{ name: string; email: string }>;
+  transcript?: string;
+  durationInMinutes?: number;
+  title?: string;
+}): { skip: boolean; reason?: string } {
+  const attendees = meeting.attendees || [];
+  
+  // No attendees = solo meeting
+  if (attendees.length === 0) {
+    return { skip: true, reason: 'No attendees (solo meeting)' };
+  }
+  
+  // Check if all attendees are Josh's email addresses
+  const nonJoshAttendees = attendees.filter(a => a.email && !JOSH_EMAILS.has(a.email));
+  
+  if (nonJoshAttendees.length === 0) {
+    return { skip: true, reason: 'Solo meeting (only Josh\'s emails)' };
+  }
+  
+  // Check for empty transcript
+  const transcript = meeting.transcript || '';
+  if (transcript.trim().length === 0) {
+    return { skip: true, reason: 'Empty transcript' };
+  }
+  
+  // Check for very short duration (less than 2 minutes)
+  if (meeting.durationInMinutes && meeting.durationInMinutes < 2) {
+    return { skip: true, reason: 'Too short (less than 2 minutes)' };
+  }
+  
+  return { skip: false };
+}

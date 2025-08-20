@@ -5,7 +5,7 @@ import { readFile, writeFile, mkdir, access, readdir, stat } from 'fs/promises';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import matter from 'gray-matter';
-import { processTranscript } from './transcript-processor';
+import { processTranscript, shouldSkipPastMeeting } from './transcript-processor';
 import { processPanels } from './panel-processor';
 
 // --- CONFIGURATION ---
@@ -15,7 +15,6 @@ import { processPanels } from './panel-processor';
 const requiredEnvVars = [
   'GRANOLA_AUTH_PATH',
   'OBSIDIAN_VAULT_MEETINGS_PATH',
-  'CACHE_DIR_PATH',
 ];
 
 // Helper to resolve tilde (~) in paths
@@ -31,7 +30,6 @@ for (const varName of requiredEnvVars) {
 const config = {
   granolaAuthPath: resolvePath(process.env.GRANOLA_AUTH_PATH!),
   obsidianVaultPath: resolvePath(process.env.OBSIDIAN_VAULT_MEETINGS_PATH!),
-  cachePath: join(resolvePath(process.env.CACHE_DIR_PATH!), 'cache-v3.json'),
   meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || '50'),
   // Pushover config for future use
   pushover: {
@@ -45,7 +43,6 @@ const config = {
 const API_BASE = 'https://api.granola.ai/v1';
 const VAULT_PATH = config.obsidianVaultPath;
 const TOKEN_PATH = config.granolaAuthPath;
-const CACHE_PATH = config.cachePath;
 
 // Template identification for panel processing
 const JOSH_TEMPLATE_SLUG = 'b491d27c-1106-4ebf-97c5-d5129742945c';
@@ -64,18 +61,6 @@ interface DocMetadata {
   sharing_link_visibility?: string;
 }
 
-interface CalendarEvent {
-  id: string;
-  summary: string;
-  start: { dateTime: string; timeZone?: string };
-  end: { dateTime: string; timeZone?: string };
-  organizer?: { email: string };
-  attendees?: Array<{ email: string; displayName?: string }>;
-  description?: string;
-  location?: string;
-  conferenceData?: any;
-  status: string;
-}
 
 interface Panel {
   id: string;
@@ -229,29 +214,6 @@ function sendPushover(title: string, message: string): void {
   });
 }
 
-// SIMPLIFIED CACHE PARSING - NO RECURSIVE FALLBACK
-async function extractEventsFromCache(): Promise<CalendarEvent[]> {
-  const cacheContent = await readFile(CACHE_PATH, 'utf-8');
-  
-  try {
-    const cacheData = JSON.parse(cacheContent);
-    if (!cacheData.cache) {
-      console.warn('Warning: "cache" key not found in cache file. No future events will be processed.');
-      return [];
-    }
-    
-    const innerData = JSON.parse(cacheData.cache);
-    if (innerData.state?.events && Array.isArray(innerData.state.events)) {
-      return innerData.state.events.filter((e: any) => e?.kind === 'calendar#event');
-    }
-    
-    console.warn('Warning: Could not find "state.events" array in cache. No future events will be processed.');
-    return [];
-  } catch (e) {
-    console.error('Error parsing cache:', e);
-    return []; // Return empty on parsing error to avoid crashing the whole sync
-  }
-}
 
 // CONTENT VALIDATION FUNCTION
 function hasContent(transcriptData: any, panels?: Panel[]): boolean {
@@ -432,7 +394,6 @@ async function main(): Promise<void> {
 
   let processedCount = 0;
   let skippedCount = 0;
-  let futureCount = 0;
 
   // 4. PROCESS PAST MEETINGS (FILED MEETINGS WITH DEDUPLICATION)
   console.log('\n📝 Processing past meetings...');
@@ -476,6 +437,20 @@ async function main(): Promise<void> {
     const metadata: DocMetadata = await metaResponse.json();
     const transcriptData = await transcriptResponse.json();
     
+    // Filter out solo/empty meetings
+    const processedTranscript = processTranscript(transcriptData);
+    const skipCheck = shouldSkipPastMeeting({
+      attendees: metadata.attendees || [],
+      transcript: processedTranscript,
+      title: meeting.title
+    });
+    
+    if (skipCheck.skip) {
+      console.log(`⏭️  Skipping past meeting: ${meeting.title} (${skipCheck.reason})`);
+      skippedCount++;
+      continue;
+    }
+    
     // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
     if (isPastMeeting(meeting)) {
       // Check if this meeting has content
@@ -492,9 +467,6 @@ async function main(): Promise<void> {
         continue;
       }
     }
-    
-    // Process transcript to add speaker labels and clean up
-    const processedTranscript = processTranscript(transcriptData);
     
     // Panel processing with graceful failure
     let panelContent = '';
@@ -542,67 +514,10 @@ async function main(): Promise<void> {
     }
   }
 
-  // 5. PROCESS FUTURE MEETINGS FROM CACHE
-  console.log('\n📅 Processing future meetings from cache...');
-  try {
-    const events = await extractEventsFromCache();
-    console.log(`   Found ${events.length} calendar events in cache`);
-    
-    const now = new Date();
-    const futureEvents = events.filter(e => {
-      if (!e.start?.dateTime) return false;
-      const eventDate = new Date(e.start.dateTime);
-      return eventDate > now && e.status !== 'cancelled';
-    });
-    
-    console.log(`   ${futureEvents.length} are future meetings`);
-    
-    for (const event of futureEvents) {
-      // Check if we already have a scheduled meeting with this calendar event ID
-      const existingScheduledMeeting = existingMeetings.find(em => 
-        em.id === event.id && em.status === 'scheduled'
-      );
-      
-      if (existingScheduledMeeting) {
-        console.log(`⏭️  Already scheduled: ${event.summary || 'Untitled Meeting'}`);
-        continue;
-      }
-      
-      const startTime = new Date(event.start.dateTime);
-      const endTime = event.end?.dateTime ? new Date(event.end.dateTime) : undefined;
-      
-      // Extract meeting URL if available
-      let meetingUrl = '';
-      if (event.conferenceData?.entryPoints) {
-        const videoEntry = event.conferenceData.entryPoints.find((e: any) => e.entryPointType === 'video');
-        if (videoEntry) meetingUrl = videoEntry.uri;
-      }
-      
-      // Normalize data for shared function
-      const meetingData: MeetingData = {
-        id: event.id,
-        title: event.summary || 'Untitled Meeting',
-        startTime,
-        endTime,
-        attendees: event.attendees?.map(a => a.displayName || a.email || 'Unknown').filter(Boolean) || [],
-        organizer: event.organizer?.email || '',
-        location: event.location || '',
-        status: 'scheduled',
-        meetingUrl,
-        durationMin: endTime ? Math.round((endTime.getTime() - startTime.getTime()) / 60000) : 60
-      };
-      
-      if (await processAndWriteMeeting(meetingData)) {
-        futureCount++;
-      }
-    }
-  } catch (error) {
-    console.error('⚠️  Error processing future meetings:', error);
-  }
 
-  // 6. SUCCESS MESSAGE
+  // 5. SUCCESS MESSAGE
   const endTimestamp = new Date().toISOString();
-  console.log(`\n[${endTimestamp}] SUCCESS: ${processedCount} past meetings, ${futureCount} future meetings synced`);
+  console.log(`\n[${endTimestamp}] SUCCESS: ${processedCount} meetings processed`);
   if (skippedCount > 0) {
     console.log(`⏭️  Skipped: ${skippedCount} empty meetings (no transcript or panels)`);
   }
