@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import 'dotenv/config';
-import { readFile, writeFile, mkdir, access } from 'fs/promises';
+import { readFile, writeFile, mkdir, access, readdir, stat } from 'fs/promises';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import matter from 'gray-matter';
@@ -102,6 +102,114 @@ interface MeetingData {
   panelContent?: string;
 }
 
+// VAULT INDEX
+interface ExistingMeeting {
+  filePath: string;
+  title: string;
+  startTime: Date;
+  status: 'filed' | 'scheduled';
+  id: string; // calendar_event_id from frontmatter
+}
+
+// TITLE NORMALIZATION FOR MATCHING
+function normalizeTitle(title: string): string {
+  return title
+    .replace(/^Re:\s*/i, '') // Remove "Re:" prefix
+    .toLowerCase()
+    .trim();
+}
+
+// TIME WINDOW MATCHING (12 hours)
+function isWithinTimeWindow(time1: Date, time2: Date): boolean {
+  const diffMs = Math.abs(time1.getTime() - time2.getTime());
+  const diffHours = diffMs / (1000 * 60 * 60);
+  return diffHours <= 12;
+}
+
+// VAULT INDEXING - SCAN EXISTING MEETING FILES
+async function indexVaultMeetings(vaultPath: string): Promise<ExistingMeeting[]> {
+  const meetings: ExistingMeeting[] = [];
+  
+  try {
+    const years = await readdir(vaultPath);
+    
+    for (const year of years) {
+      if (!year.match(/^\d{4}$/)) continue; // Skip non-year folders
+      
+      const yearPath = join(vaultPath, year);
+      const yearStat = await stat(yearPath);
+      if (!yearStat.isDirectory()) continue;
+      
+      const months = await readdir(yearPath);
+      
+      for (const month of months) {
+        const monthPath = join(yearPath, month);
+        const monthStat = await stat(monthPath);
+        if (!monthStat.isDirectory()) continue;
+        
+        const days = await readdir(monthPath);
+        
+        for (const day of days) {
+          const dayPath = join(monthPath, day);
+          const dayStat = await stat(dayPath);
+          if (!dayStat.isDirectory()) continue;
+          
+          const files = await readdir(dayPath);
+          
+          for (const file of files) {
+            if (!file.endsWith('.md')) continue;
+            
+            const filePath = join(dayPath, file);
+            try {
+              const content = await readFile(filePath, 'utf-8');
+              const parsed = matter(content);
+              const frontmatter = parsed.data;
+              
+              if (frontmatter.source === 'granola' && frontmatter.calendar_event_id) {
+                meetings.push({
+                  filePath,
+                  title: frontmatter.title || '',
+                  startTime: new Date(frontmatter.start_time || ''),
+                  status: frontmatter.status || 'scheduled',
+                  id: frontmatter.calendar_event_id
+                });
+              }
+            } catch (error) {
+              // Skip files that can't be parsed
+              continue;
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error indexing vault:', error);
+  }
+  
+  return meetings;
+}
+
+// FIND MATCHING SCHEDULED MEETING
+function findMatchingScheduledMeeting(
+  filedMeeting: { title: string; startTime: Date }, 
+  existingMeetings: ExistingMeeting[]
+): ExistingMeeting | null {
+  const normalizedTitle = normalizeTitle(filedMeeting.title);
+  
+  for (const existing of existingMeetings) {
+    if (existing.status !== 'scheduled') continue;
+    
+    const existingNormalizedTitle = normalizeTitle(existing.title);
+    
+    if (existingNormalizedTitle === normalizedTitle && 
+        isWithinTimeWindow(filedMeeting.startTime, existing.startTime)) {
+      return existing;
+    }
+  }
+  
+  return null;
+}
+
 // PUSHOVER NOTIFICATION - FIRE AND FORGET
 function sendPushover(title: string, message: string): void {
   if (!config.pushover.userKey || !config.pushover.apiToken) return;
@@ -168,8 +276,8 @@ function isPastMeeting(meeting: GranolaDoc): boolean {
   return meetingTime < new Date();
 }
 
-// SHARED FUNCTION TO PROCESS AND WRITE MEETINGS
-async function processAndWriteMeeting(data: MeetingData): Promise<boolean> {
+// SHARED FUNCTION TO PROCESS AND WRITE MEETINGS  
+async function processAndWriteMeeting(data: MeetingData, existingMeeting?: ExistingMeeting): Promise<boolean> {
   // Convert to Eastern timezone for folder structure (use direct toLocaleDateString with timezone)
   const year = parseInt(data.startTime.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/New_York' }));
   const month = String(parseInt(data.startTime.toLocaleDateString('en-US', { month: 'numeric', timeZone: 'America/New_York' }))).padStart(2, '0');
@@ -178,25 +286,32 @@ async function processAndWriteMeeting(data: MeetingData): Promise<boolean> {
   const dayName = data.startTime.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/New_York' });
   
   // For filename timestamp, use Eastern timezone as well
-  const easternDateStr = data.startTime.toLocaleDateString('en-US', { 
-    year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'America/New_York' 
-  }).replace(/\//g, '-');
+  const easternDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   const easternTimeStr = data.startTime.toLocaleTimeString('en-US', { 
     hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' 
   }).replace(':', '-');
   const dateStr = `${easternDateStr} ${easternTimeStr}`;
 
-  const cleanTitle = data.title.replace(/[^\w\s-]/g, '').replace(/\s+/g, ' ').trim();
-  const shortId = data.id.substring(0, 8);
-  const filename = `${dateStr} ${cleanTitle} -- ${shortId}.md`;
-  const filePath = join(VAULT_PATH, String(year), `${month}-${monthName}`, `${day}-${dayName}`, filename);
+  // Use existing file path if updating, otherwise create new path
+  let filePath: string;
+  
+  if (existingMeeting) {
+    // Update existing scheduled meeting file
+    filePath = existingMeeting.filePath;
+  } else {
+    // Create new file path
+    const cleanTitle = data.title.replace(/[^\w\s-]/g, '').replace(/\s+/g, ' ').trim();
+    const shortId = data.id.substring(0, 8);
+    const filename = `${dateStr} ${cleanTitle} -- ${shortId}.md`;
+    filePath = join(VAULT_PATH, String(year), `${month}-${monthName}`, `${day}-${dayName}`, filename);
 
-  // Skip if file exists
-  try {
-    await access(filePath);
-    return false;
-  } catch {
-    // File doesn't exist, continue
+    // Skip if file exists
+    try {
+      await access(filePath);
+      return false;
+    } catch {
+      // File doesn't exist, continue
+    }
   }
 
   // Create frontmatter
@@ -274,14 +389,19 @@ async function main(): Promise<void> {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Starting sync with future meetings...`);
 
-  // 1. GET AUTH TOKEN
+  // 1. INDEX EXISTING VAULT MEETINGS
+  console.log('\n📁 Indexing existing vault meetings...');
+  const existingMeetings = await indexVaultMeetings(VAULT_PATH);
+  console.log(`   Found ${existingMeetings.length} existing meetings`);
+
+  // 2. GET AUTH TOKEN
   const tokenData = JSON.parse(await readFile(TOKEN_PATH, 'utf-8'));
   const tokens = JSON.parse(tokenData.workos_tokens);
   const token = tokens.access_token;
   
   if (!token) throw new Error('No auth token found');
 
-  // 2. FETCH PAST/PROCESSED MEETINGS FROM API
+  // 3. FETCH PAST/PROCESSED MEETINGS FROM API
   console.log('\n📥 Fetching processed meetings from API...');
   const docsResponse = await fetch(`${API_BASE}/get-documents`, {
     method: 'POST',
@@ -314,9 +434,18 @@ async function main(): Promise<void> {
   let skippedCount = 0;
   let futureCount = 0;
 
-  // 3. PROCESS PAST MEETINGS
+  // 4. PROCESS PAST MEETINGS (FILED MEETINGS WITH DEDUPLICATION)
   console.log('\n📝 Processing past meetings...');
   for (const meeting of meetings) {
+    // Check if we already have a filed meeting with this Granola ID
+    const existingFiledMeeting = existingMeetings.find(em => 
+      em.id === meeting.id && em.status === 'filed'
+    );
+    
+    if (existingFiledMeeting) {
+      console.log(`⏭️  Already exists: ${meeting.title}`);
+      continue;
+    }
     // Fetch metadata and transcript first (to avoid unnecessary API calls if file exists)
     const [metaResponse, transcriptResponse] = await Promise.all([
       fetch(`${API_BASE}/get-document-metadata`, {
@@ -397,12 +526,23 @@ async function main(): Promise<void> {
       panelContent: panelContent
     };
     
-    if (await processAndWriteMeeting(meetingData)) {
-      processedCount++;
+    // DEDUPLICATION: Check for matching scheduled meeting
+    const matchingScheduledMeeting = findMatchingScheduledMeeting(meetingData, existingMeetings);
+    
+    if (matchingScheduledMeeting) {
+      console.log(`🔄 Updating scheduled meeting: ${meeting.title} → ${matchingScheduledMeeting.filePath}`);
+      if (await processAndWriteMeeting(meetingData, matchingScheduledMeeting)) {
+        processedCount++;
+      }
+    } else {
+      // No matching scheduled meeting, create new filed meeting
+      if (await processAndWriteMeeting(meetingData)) {
+        processedCount++;
+      }
     }
   }
 
-  // 4. PROCESS FUTURE MEETINGS FROM CACHE
+  // 5. PROCESS FUTURE MEETINGS FROM CACHE
   console.log('\n📅 Processing future meetings from cache...');
   try {
     const events = await extractEventsFromCache();
@@ -418,6 +558,16 @@ async function main(): Promise<void> {
     console.log(`   ${futureEvents.length} are future meetings`);
     
     for (const event of futureEvents) {
+      // Check if we already have a scheduled meeting with this calendar event ID
+      const existingScheduledMeeting = existingMeetings.find(em => 
+        em.id === event.id && em.status === 'scheduled'
+      );
+      
+      if (existingScheduledMeeting) {
+        console.log(`⏭️  Already scheduled: ${event.summary || 'Untitled Meeting'}`);
+        continue;
+      }
+      
       const startTime = new Date(event.start.dateTime);
       const endTime = event.end?.dateTime ? new Date(event.end.dateTime) : undefined;
       
@@ -450,7 +600,7 @@ async function main(): Promise<void> {
     console.error('⚠️  Error processing future meetings:', error);
   }
 
-  // 5. SUCCESS MESSAGE
+  // 6. SUCCESS MESSAGE
   const endTimestamp = new Date().toISOString();
   console.log(`\n[${endTimestamp}] SUCCESS: ${processedCount} past meetings, ${futureCount} future meetings synced`);
   if (skippedCount > 0) {
