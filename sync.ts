@@ -2,11 +2,16 @@
 
 import 'dotenv/config';
 import { readFile, writeFile, mkdir, access, readdir, stat } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import matter from 'gray-matter';
 import { processTranscript, shouldSkipPastMeeting } from './transcript-processor';
 import { processPanels } from './panel-processor';
+
+const execFileAsync = promisify(execFile);
 
 // --- CONFIGURATION ---
 // All user-configurable values are sourced from environment variables.
@@ -31,12 +36,22 @@ const config = {
   granolaAuthPath: resolvePath(process.env.GRANOLA_AUTH_PATH!),
   obsidianVaultPath: resolvePath(process.env.OBSIDIAN_VAULT_MEETINGS_PATH!),
   meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || '50'),
+  // Meeting processing config
+  enableMeetingProcessing: process.env.ENABLE_MEETING_PROCESSING === 'true',
+  vaultOpsScriptPath: process.env.VAULT_OPS_SCRIPT_PATH,
   // Pushover config for future use
   pushover: {
     userKey: process.env.PUSHOVER_USER_KEY,
     apiToken: process.env.PUSHOVER_API_TOKEN,
   },
 };
+
+// Check external script exists if processing is enabled (log but don't fail)
+if (config.enableMeetingProcessing) {
+  if (!config.vaultOpsScriptPath || !existsSync(config.vaultOpsScriptPath)) {
+    console.log(`⚠️  External script not found: ${config.vaultOpsScriptPath}. Meeting processing will be skipped.`);
+  }
+}
 
 // --- END CONFIGURATION ---
 
@@ -45,7 +60,7 @@ const VAULT_PATH = config.obsidianVaultPath;
 const TOKEN_PATH = config.granolaAuthPath;
 
 // Template identification for panel processing
-const JOSH_TEMPLATE_SLUG = 'b491d27c-1106-4ebf-97c5-d5129742945c';
+const TEMPLATE_SLUG = 'b491d27c-1106-4ebf-97c5-d5129742945c';
 
 // TYPES
 interface GranolaDoc {
@@ -214,6 +229,31 @@ function sendPushover(title: string, message: string): void {
   });
 }
 
+// MEETING PROCESSING FUNCTION
+async function processSingleMeeting(): Promise<void> {
+  if (!config.enableMeetingProcessing) return;
+  
+  if (!config.vaultOpsScriptPath || !existsSync(config.vaultOpsScriptPath)) {
+    console.log(`⚠️  External script not found, skipping meeting processing`);
+    return;
+  }
+  
+  console.log(`🤖 Calling external processing script...`);
+  
+  try {
+    // Fire and forget - don't wait for completion
+    const { spawn } = await import('child_process');
+    spawn('/opt/homebrew/bin/bash', [config.vaultOpsScriptPath], {
+      detached: true,
+      stdio: 'ignore'
+    }).unref();
+    console.log(`✅ External script launched (fire and forget)`);
+  } catch (error: any) {
+    console.error(`❌ Failed to launch external script: ${error.message}`);
+    // Don't throw - this shouldn't fail the sync
+  }
+}
+
 
 // CONTENT VALIDATION FUNCTION
 function hasContent(transcriptData: any, panels?: Panel[]): boolean {
@@ -239,7 +279,7 @@ function isPastMeeting(meeting: GranolaDoc): boolean {
 }
 
 // SHARED FUNCTION TO PROCESS AND WRITE MEETINGS  
-async function processAndWriteMeeting(data: MeetingData, existingMeeting?: ExistingMeeting): Promise<boolean> {
+async function processAndWriteMeeting(data: MeetingData, existingMeeting?: ExistingMeeting): Promise<{ success: boolean; filePath?: string }> {
   // Convert to Eastern timezone for folder structure (use direct toLocaleDateString with timezone)
   const year = parseInt(data.startTime.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/New_York' }));
   const month = String(parseInt(data.startTime.toLocaleDateString('en-US', { month: 'numeric', timeZone: 'America/New_York' }))).padStart(2, '0');
@@ -270,7 +310,7 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
     // Skip if file exists
     try {
       await access(filePath);
-      return false;
+      return { success: false };
     } catch {
       // File doesn't exist, continue
     }
@@ -325,7 +365,7 @@ ${data.transcript}`
   await writeFile(filePath, markdown, 'utf-8');
   
   console.log(data.status === 'filed' ? `✓ ${data.title}` : `📅 ${data.title} (${dateStr})`);
-  return true;
+  return { success: true, filePath };
 }
 
 // PANEL API FUNCTION
@@ -394,6 +434,7 @@ async function main(): Promise<void> {
 
   let processedCount = 0;
   let skippedCount = 0;
+  const newlyProcessedMeetings: { filePath: string; data: MeetingData }[] = [];
 
   // 4. PROCESS PAST MEETINGS (FILED MEETINGS WITH DEDUPLICATION)
   console.log('\n📝 Processing past meetings...');
@@ -479,10 +520,10 @@ async function main(): Promise<void> {
     let panelContent = '';
     try {
       if (panels && panels.length > 0) {
-        // Sort panels: Josh Template first
+        // Sort panels: specified template first
         const sortedPanels = panels.sort((a, b) => 
-          (b.template_slug === JOSH_TEMPLATE_SLUG ? 1 : 0) - 
-          (a.template_slug === JOSH_TEMPLATE_SLUG ? 1 : 0)
+          (b.template_slug === TEMPLATE_SLUG ? 1 : 0) - 
+          (a.template_slug === TEMPLATE_SLUG ? 1 : 0)
         );
         panelContent = processPanels(sortedPanels);
       }
@@ -509,19 +550,28 @@ async function main(): Promise<void> {
     
     if (matchingScheduledMeeting) {
       console.log(`🔄 Updating scheduled meeting: ${meeting.title} → ${matchingScheduledMeeting.filePath}`);
-      if (await processAndWriteMeeting(meetingData, matchingScheduledMeeting)) {
+      const result = await processAndWriteMeeting(meetingData, matchingScheduledMeeting);
+      if (result.success && result.filePath) {
         processedCount++;
+        newlyProcessedMeetings.push({ filePath: result.filePath, data: meetingData });
       }
     } else {
       // No matching scheduled meeting, create new filed meeting
-      if (await processAndWriteMeeting(meetingData)) {
+      const result = await processAndWriteMeeting(meetingData);
+      if (result.success && result.filePath) {
         processedCount++;
+        newlyProcessedMeetings.push({ filePath: result.filePath, data: meetingData });
       }
     }
   }
 
+  // 5. PROCESS NEWLY SYNCED MEETINGS
+  if (config.enableMeetingProcessing && newlyProcessedMeetings.length > 0) {
+    console.log(`\n🤖 Processing ${newlyProcessedMeetings.length} newly synced meetings...`);
+    await processSingleMeeting();
+  }
 
-  // 5. SUCCESS MESSAGE
+  // 6. SUCCESS MESSAGE
   const endTimestamp = new Date().toISOString();
   console.log(`\n[${endTimestamp}] SUCCESS: ${processedCount} meetings processed`);
   if (skippedCount > 0) {
