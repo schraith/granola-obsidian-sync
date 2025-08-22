@@ -42,6 +42,7 @@ Edit `.env` with required settings:
 ### Optional
 - `GRANOLA_MEETINGS_LIMIT`: Number of meetings to fetch from API (default: 50)
 - `OWNER_EMAILS`: Comma-separated email(s) to identify which speaker is "Me" in transcripts
+- `SYNC_TRANSCRIPT`: Include meeting transcript in Obsidian notes (default: false)
 - `PUSHOVER_USER_KEY` & `PUSHOVER_API_TOKEN`: For error notifications
 - `ENABLE_MEETING_PROCESSING`: Set to 'true' to enable external script processing
 - `VAULT_OPS_SCRIPT_PATH`: Path to external processing script
@@ -178,7 +179,7 @@ Your task is to process a meeting following the steps below.
    - Tags: add tags as YAML list format: ['#tag1', '#tag2'] - tags must be valid, do not make up new tags
    - Summary: [from the analysis - this should be a concise 2-3 sentence description. avoid phrases like 'this meeting...' or 'You met with...' - every word should add meaning to the summary]  IMPORTANT: Only use straight quotes or apostrophes. This must be valid YAML.
    - Processed: Claude
-   - Ensure that the frontmatter is valid YAML format and there are "---" on their own lines at the top and bottom of the
+   - Ensure that the frontmatter is valid YAML format and there are "---" on their own lines at the top and bottom of the frontmatter section
 
 **STEP 4** Identify all  NEXT ACTIONS in the meeting and add them to the body of the meeting as Obsidian tasks:
    - Add all tasks immediately under the "## Tasks" header

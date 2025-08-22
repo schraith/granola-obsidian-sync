@@ -36,6 +36,7 @@ const config = {
   granolaAuthPath: resolvePath(process.env.GRANOLA_AUTH_PATH!),
   obsidianVaultPath: resolvePath(process.env.OBSIDIAN_VAULT_MEETINGS_PATH!),
   meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || '50'),
+  syncTranscript: process.env.SYNC_TRANSCRIPT === 'true',
   // Meeting processing config
   enableMeetingProcessing: process.env.ENABLE_MEETING_PROCESSING === 'true',
   vaultOpsScriptPath: process.env.VAULT_OPS_SCRIPT_PATH,
@@ -336,7 +337,7 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
   };
 
   // Create content based on status
-  const content = data.status === 'filed' && data.transcript
+  const content = data.status === 'filed'
     ? `# ${data.title}
 
 ## Agenda
@@ -345,10 +346,10 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
 
 ## Summary
 
-${data.panelContent || ''}
+${data.panelContent || ''}${config.syncTranscript && data.transcript ? `
 
 ## Transcript
-${data.transcript}`
+${data.transcript}` : ''}`
     : `# ${data.title}
 
 ## Agenda
@@ -507,6 +508,9 @@ async function main(): Promise<void> {
       continue;
     }
     
+    // Only do full transcript processing if we're syncing transcripts
+    const finalTranscript = config.syncTranscript ? processedTranscript : '';
+    
     // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
     if (isPastMeeting(meeting)) {
       if (!hasContent(transcriptData, panels)) {
@@ -541,7 +545,7 @@ async function main(): Promise<void> {
       organizer: metadata.creator?.name || '',
       location: '',
       status: 'filed',
-      transcript: processedTranscript,
+      transcript: finalTranscript,
       panelContent: panelContent
     };
     
