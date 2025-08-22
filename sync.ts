@@ -279,6 +279,12 @@ function isPastMeeting(meeting: GranolaDoc): boolean {
   return meetingTime < new Date();
 }
 
+// NORMALIZE ATTENDEE DATA FOR CONSISTENT FORMATTING
+function normalizeAttendee(attendee: { name?: string; email?: string }): string {
+  const hasValidName = attendee.name && attendee.name !== "undefined";
+  return hasValidName ? `${attendee.name} <${attendee.email}>` : attendee.email || '';
+}
+
 // SHARED FUNCTION TO PROCESS AND WRITE MEETINGS  
 async function processAndWriteMeeting(data: MeetingData, existingMeeting?: ExistingMeeting): Promise<{ success: boolean; filePath?: string }> {
   // Convert to Eastern timezone for folder structure (use direct toLocaleDateString with timezone)
@@ -541,7 +547,7 @@ async function main(): Promise<void> {
       id: meeting.id,
       title: meeting.title,
       startTime: new Date(meeting.created_at),
-      attendees: metadata.attendees?.map(a => a.name || a.email || 'Unknown').filter(Boolean) || [],
+      attendees: metadata.attendees?.map(normalizeAttendee).filter(Boolean) || [],
       organizer: metadata.creator?.name || '',
       location: '',
       status: 'filed',
