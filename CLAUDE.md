@@ -13,9 +13,6 @@ IMPORTANT! All file and meeting operations occur in 'America/New York' (Eastern 
 ```bash
 # Run the sync
 bun sync.ts
-
-# Via shell wrapper (for launchctl)
-./run-sync.sh
 ```
 
 ## Architecture
@@ -64,7 +61,7 @@ All paths and tokens are configured via environment variables in `.env`:
 The sync can be scheduled via:
 - **macOS**: launchctl with plist (see README for example)
 - **Linux**: cron (see README for example)
-- Wrapper script: `run-sync.sh` ensures correct PATH for bun
+- Both methods call bun directly with proper PATH configuration
 
 ## API Endpoints Used
 

@@ -54,11 +54,6 @@ Edit `.env` with required settings:
 bun sync.ts
 ```
 
-### Shell Wrapper (for scheduled execution)
-```bash
-./run-sync.sh
-```
-
 ### Scheduled (macOS launchd)
 
 Save this to `~/Library/LaunchAgents/com.user.granola-sync.plist`:
@@ -72,8 +67,16 @@ Save this to `~/Library/LaunchAgents/com.user.granola-sync.plist`:
     <string>com.user.granola-sync</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/path/to/granola-obsidian-sync/run-sync.sh</string>
+        <string>/Users/joshroman/.bun/bin/bun</string>
+        <string>/path/to/granola-obsidian-sync/sync.ts</string>
     </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/granola-obsidian-sync</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/joshroman/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
     <key>StartCalendarInterval</key>
     <array>
         <dict>
@@ -102,7 +105,7 @@ launchctl load ~/Library/LaunchAgents/com.user.granola-sync.plist
 
 Add to crontab with `crontab -e`:
 ```bash
-*/30 * * * * /path/to/granola-obsidian-sync/run-sync.sh >> /tmp/granola-sync.log 2>&1
+*/30 * * * * cd /path/to/granola-obsidian-sync && /usr/local/bin/bun sync.ts >> /tmp/granola-sync.log 2>&1
 ```
 
 ## How It Works
@@ -127,7 +130,6 @@ transcript-processor.ts # Transcript processing and speaker identification
 panel-processor.ts      # Panel content processing
 .env                   # Configuration (not tracked)
 .env.example          # Configuration template
-run-sync.sh           # Shell wrapper for scheduled execution
 CLAUDE.md             # Primary guidance for Claude Code (claude.ai/code)
 GEMINI.md             # Guidance for Gemini CLI (alternative assistant)
 AGENTS.md             # Guidance for OpenAI Codex CLI (alternative assistant)

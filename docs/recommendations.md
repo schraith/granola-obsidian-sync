@@ -3,10 +3,11 @@
 
 ## High Priority Fixes
 
-### 1. Missing `run-sync.sh` wrapper script [added: 2025-08-25]
-- **Issue**: Referenced in README and CLAUDE.md but doesn't exist
-- **Impact**: Breaks scheduled execution setup
-- **Fix**: Create the shell wrapper script with proper PATH setup for bun
+### 1. ~~Missing `run-sync.sh` wrapper script~~ [removed: 2025-08-25]
+- **Issue**: Was referenced in docs but added unnecessary complexity
+- **Impact**: None - plist calls bun directly with PATH configured
+- **Fix**: Removed wrapper, updated docs to show direct bun invocation
+- **Status**: ✅ Simplified - Removed wrapper for cleaner setup
 
 ### 2. Pushover notification race condition [added: 2025-08-25]
 - **Issue**: `sendPushover` not awaited in catch block
