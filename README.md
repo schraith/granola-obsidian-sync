@@ -128,7 +128,14 @@ panel-processor.ts      # Panel content processing
 .env                   # Configuration (not tracked)
 .env.example          # Configuration template
 run-sync.sh           # Shell wrapper for scheduled execution
+CLAUDE.md             # Primary guidance for Claude Code (claude.ai/code)
+GEMINI.md             # Guidance for Gemini CLI (alternative assistant)
+AGENTS.md             # Guidance for OpenAI Codex CLI (alternative assistant)
+docs/                 # Additional documentation
+└── recommendations.md # Prioritized improvements and bug fixes
 ```
+
+> **Note**: This project is developed primarily with Claude Code, but includes documentation for Gemini and Codex CLI tools for those who prefer alternative assistants or wish to fork the repository.
 
 ## Sync Behavior
 
