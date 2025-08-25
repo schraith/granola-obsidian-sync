@@ -1,6 +1,9 @@
 # Granola to Obsidian Sync
 
-Simple tool for syncing Granola meeting notes to an Obsidian vault. Fetches past meetings with panels and transcripts from the Granola API and creates organized Markdown files with YAML frontmatter.
+Simple tool for syncing Granola meeting notes to an Obsidian vault. Fetches past meetings with panels and transcripts from the Granola API and creates organized Markdown files with YAML frontmatter in a configurable Obsidian subdirectory.
+
+**Important Notes:** 
+- Granola does not have a public API. This project uses the private Granola MacOS app API which is subject to frequent breaking changes. When a public API is available this project will be updated to use it.
 
 ## Features
 
@@ -135,6 +138,7 @@ GEMINI.md             # Guidance for Gemini CLI (alternative assistant)
 AGENTS.md             # Guidance for OpenAI Codex CLI (alternative assistant)
 docs/                 # Additional documentation
 └── recommendations.md # Prioritized improvements and bug fixes
+temp/                 # temporary files (git ignored)
 ```
 
 > **Note**: This project is developed primarily with Claude Code, but includes documentation for Gemini and Codex CLI tools for those who prefer alternative assistants or wish to fork the repository.
