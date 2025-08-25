@@ -32,11 +32,6 @@
 
 ## Code Hygiene
 
-### 6. Remove Slack cache files from git [added: 2025-08-25]
-- **Issue**: `.channels_cache.json` and `.users_cache.json` are committed
-- **Impact**: Adds noise to repo
-- **Fix**: Add to .gitignore and remove from tracking
-
 ## Lower Priority Enhancements
 
 ### 7. Template priority configuration [added: 2025-08-25]
@@ -55,5 +50,12 @@
 ## Implementation Priority
 1. Items 1-3: Critical bug fixes
 2. Items 4-5: Portability fixes  
-3. Item 6: Cleanup
-4. Items 7-9: Nice to have
+3. Items 7-9: Nice to have
+
+## Implemented Recommendations
+
+### 6. Remove Slack cache files from git [added: 2025-08-25] [IMPLEMENTED: 2025-08-25]
+- **Issue**: `.channels_cache.json` and `.users_cache.json` were committed
+- **Impact**: Added noise to repo
+- **Fix**: Added to .gitignore and removed from tracking
+- **Status**: ✅ Completed - Files removed from git and added to .gitignore

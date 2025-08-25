@@ -74,3 +74,7 @@ webhook-config.private.json
 data/
 *.private.*
 .cache/
+
+# Slack cache files
+.channels_cache.json
+.users_cache.json
