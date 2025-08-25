@@ -79,6 +79,13 @@ The sync can be scheduled via:
 - Dependencies: `gray-matter` (YAML frontmatter), `dotenv` (env vars)
 - No build step - runs directly with `bun`
 
+## Documentation
+
+- `/docs/recommendations.md` - Prioritized improvements and bug fixes with implementation dates
+- `CLAUDE.md` - This file, guidance for Claude Code (claude.ai/code)
+- `GEMINI.md` - Guidance for Gemini CLI
+- `AGENTS.md` - Guidance for OpenAI Codex CLI
+
 ## Setup for New Users
 
 1. Clone repo
