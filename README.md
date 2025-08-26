@@ -9,6 +9,7 @@ Simple tool for syncing Granola meeting notes to an Obsidian vault. Fetches past
 
 - **Panel-Required Sync**: Only syncs meetings that have panels (Granola's structured content) to ensure that meeting is over & Granola AI has summarized meeting 
 - **Transcript Processing**: Adds speaker labels (Me/Them), removes duplicates, groups by speaker (raw transcripts from Granola do not have this)
+- **Selective Transcript Sync**: Filter which meetings get transcripts based on title keywords
 - **Deduplication**: Automatically updates scheduled meetings when they become filed meetings
 - **Vault Indexing**: Scans existing meetings to prevent duplicates and enable smart matching
 - **External Processing**: Optional integration with external scripts for further automation
@@ -46,6 +47,7 @@ Edit `.env` with required settings:
 - `GRANOLA_MEETINGS_LIMIT`: Number of meetings to fetch from API (default: 50)
 - `OWNER_EMAILS`: Comma-separated email(s) to identify which speaker is "Me" in transcripts
 - `SYNC_TRANSCRIPT`: Include meeting transcript in Obsidian notes (default: false)
+- `TRANSCRIPT_TITLE_FILTER`: Only sync transcripts for meetings with these title keywords (comma-separated, case-insensitive). Example: `"1:1,sync,review"`. Leave blank to use `SYNC_TRANSCRIPT` setting for all meetings
 - `PUSHOVER_USER_KEY` & `PUSHOVER_API_TOKEN`: For error notifications
 - `ENABLE_MEETING_PROCESSING`: Set to 'true' to enable external script processing
 - `VAULT_OPS_SCRIPT_PATH`: Path to external processing script

@@ -37,6 +37,7 @@ const config = {
   obsidianVaultPath: resolvePath(process.env.OBSIDIAN_VAULT_MEETINGS_PATH!),
   meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || '50'),
   syncTranscript: process.env.SYNC_TRANSCRIPT === 'true',
+  transcriptTitleFilter: process.env.TRANSCRIPT_TITLE_FILTER?.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) || [],
   // Meeting processing config
   enableMeetingProcessing: process.env.ENABLE_MEETING_PROCESSING === 'true',
   vaultOpsScriptPath: process.env.VAULT_OPS_SCRIPT_PATH,
@@ -118,6 +119,18 @@ function normalizeTitle(title: string): string {
     .replace(/^Re:\s*/i, '') // Remove "Re:" prefix
     .toLowerCase()
     .trim();
+}
+
+// CHECK IF TRANSCRIPT SHOULD BE SYNCED FOR THIS MEETING
+function shouldSyncTranscript(title: string): boolean {
+  // If no filters are configured, use global setting
+  if (config.transcriptTitleFilter.length === 0) {
+    return config.syncTranscript;
+  }
+  
+  // Check if any filter matches the title (case-insensitive)
+  const titleLower = title.toLowerCase();
+  return config.transcriptTitleFilter.some(filter => titleLower.includes(filter));
 }
 
 // TIME WINDOW MATCHING (12 hours)
@@ -352,7 +365,7 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
 
 ## Summary
 
-${data.panelContent || ''}${config.syncTranscript && data.transcript ? `
+${data.panelContent || ''}${shouldSyncTranscript(data.title) && data.transcript ? `
 
 ## Transcript
 ${data.transcript}` : ''}`
@@ -514,8 +527,8 @@ async function main(): Promise<void> {
       continue;
     }
     
-    // Only do full transcript processing if we're syncing transcripts
-    const finalTranscript = config.syncTranscript ? processedTranscript : '';
+    // Only do full transcript processing if we're syncing transcripts for this meeting
+    const finalTranscript = shouldSyncTranscript(meeting.title) ? processedTranscript : '';
     
     // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
     if (isPastMeeting(meeting)) {
