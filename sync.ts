@@ -180,7 +180,7 @@ function categorizeMeeting(title: string): MeetingCategory {
 }
 
 // VAULT INDEXING - SCAN EXISTING MEETING FILES (INCLUDING TRASHED)
-async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = true): Promise<ExistingMeeting[]> {
+async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = true, debug: boolean = false): Promise<ExistingMeeting[]> {
   const meetings: ExistingMeeting[] = [];
   const deletedIds = new Set<string>();
   
@@ -207,7 +207,7 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
               const parsed = matter(content);
               if (parsed.data.source === 'granola' && parsed.data.calendar_event_id) {
                 deletedIds.add(parsed.data.calendar_event_id);
-                console.log(`   Found in trash: ${parsed.data.title || entry.name}`);
+                if (debug) console.log(`   Found in trash: ${parsed.data.title || entry.name}`);
                 // Add to meetings array with isDeleted flag
                 meetings.push({
                   filePath: fullPath,
@@ -777,7 +777,7 @@ async function main(): Promise<void> {
 
   // 1. INDEX EXISTING VAULT MEETINGS
   console.log('\n📁 Indexing existing vault meetings...');
-  const existingMeetings = await indexVaultMeetings(VAULT_PATH);
+  const existingMeetings = await indexVaultMeetings(VAULT_PATH, true, config.debug);
   console.log(`   Found ${existingMeetings.length} existing meetings`);
 
   // 2. GET AUTH TOKEN
