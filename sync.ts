@@ -379,7 +379,7 @@ function normalizeAttendee(attendee: { name?: string; email?: string }): string 
 // CREATE OR APPEND TO 1:1 MEETING FILE
 async function handleOneOnOneMeeting(data: MeetingData, personName: string): Promise<{ success: boolean; action: string; filePath?: string }> {
   const oneOnOneFilename = `1 <> 1 ${personName}.md`;
-  const oneOnOnePath = join(VAULT_PATH, '..', '1 <> 1', oneOnOneFilename);
+  const oneOnOnePath = join(VAULT_PATH, '1 <> 1', oneOnOneFilename);
   
   const dateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   
@@ -452,7 +452,7 @@ ${data.panelContent || ''}
 // CREATE OR APPEND TO RECURRING MEETING FILE
 async function handleRecurringMeeting(data: MeetingData, meetingName: string): Promise<{ success: boolean; action: string; filePath?: string }> {
   const recurringFilename = `${meetingName}.md`;
-  const recurringPath = join(VAULT_PATH, '..', 'Recurring', recurringFilename);
+  const recurringPath = join(VAULT_PATH, 'Recurring', recurringFilename);
   
   const dateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   
@@ -539,7 +539,20 @@ async function handleAdHocMeeting(data: MeetingData): Promise<{ success: boolean
     .trim();
   
   const filename = `${pacificDateStr} - ${cleanTitle}.md`;
-  const filePath = join(VAULT_PATH, '..', filename);
+  const filePath = join(VAULT_PATH, filename);
+  
+  // Check if file already exists with this meeting ID
+  try {
+    await access(filePath);
+    // File exists - check if it's the same meeting
+    const content = await readFile(filePath, 'utf-8');
+    const parsed = matter(content);
+    if (parsed.data.calendar_event_id === data.id) {
+      return { success: false, action: `Already exists: ${cleanTitle}`, filePath };
+    }
+  } catch {
+    // File doesn't exist, continue
+  }
   
   // Extract attendee names
   const attendeeNames = data.attendees.map(a => a.split(' <')[0]);
