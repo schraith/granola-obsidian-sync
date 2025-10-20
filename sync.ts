@@ -229,58 +229,50 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
   }
   
   try {
-    const years = await readdir(vaultPath);
+    // Check if vault path exists first
+    try {
+      await access(vaultPath);
+    } catch {
+      // Vault path doesn't exist - return empty meetings list
+      console.log(`⚠️  Vault path does not exist: ${vaultPath}`);
+      return meetings;
+    }
     
-    for (const year of years) {
-      if (!year.match(/^\d{4}$/)) continue; // Skip non-year folders
+    // Recursively scan vault directory for markdown files
+    const scanDirectory = async (dir: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true });
       
-      const yearPath = join(vaultPath, year);
-      const yearStat = await stat(yearPath);
-      if (!yearStat.isDirectory()) continue;
-      
-      const months = await readdir(yearPath);
-      
-      for (const month of months) {
-        const monthPath = join(yearPath, month);
-        const monthStat = await stat(monthPath);
-        if (!monthStat.isDirectory()) continue;
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
         
-        const days = await readdir(monthPath);
-        
-        for (const day of days) {
-          const dayPath = join(monthPath, day);
-          const dayStat = await stat(dayPath);
-          if (!dayStat.isDirectory()) continue;
-          
-          const files = await readdir(dayPath);
-          
-          for (const file of files) {
-            if (!file.endsWith('.md')) continue;
+        if (entry.isDirectory()) {
+          // Recursively scan subdirectories
+          await scanDirectory(fullPath);
+        } else if (entry.name.endsWith('.md')) {
+          try {
+            const content = await readFile(fullPath, 'utf-8');
+            const parsed = matter(content);
+            const frontmatter = parsed.data;
             
-            const filePath = join(dayPath, file);
-            try {
-              const content = await readFile(filePath, 'utf-8');
-              const parsed = matter(content);
-              const frontmatter = parsed.data;
-              
-              if (frontmatter.source === 'granola' && frontmatter.calendar_event_id) {
-                meetings.push({
-                  filePath,
-                  title: frontmatter.title || '',
-                  startTime: new Date(frontmatter.start_time || ''),
-                  status: frontmatter.status || 'scheduled',
-                  id: frontmatter.calendar_event_id,
-                  isDeleted: deletedIds.has(frontmatter.calendar_event_id)
-                } as any);
-              }
-            } catch (error) {
-              // Skip files that can't be parsed
-              continue;
+            if (frontmatter.source === 'granola' && frontmatter.calendar_event_id) {
+              meetings.push({
+                filePath: fullPath,
+                title: frontmatter.title || '',
+                startTime: new Date(frontmatter.start_time || ''),
+                status: frontmatter.status || 'scheduled',
+                id: frontmatter.calendar_event_id,
+                isDeleted: deletedIds.has(frontmatter.calendar_event_id)
+              } as any);
             }
+          } catch (error) {
+            // Skip files that can't be parsed
+            continue;
           }
         }
       }
-    }
+    };
+    
+    await scanDirectory(vaultPath);
   } catch (error) {
     console.error('Error indexing vault:', error);
   }
@@ -313,7 +305,7 @@ function findMatchingScheduledMeeting(
 function sendPushover(title: string, message: string): void {
   if (!config.pushover.userKey || !config.pushover.apiToken) return;
   
-  fetch('https://api.pushover.net/1/messages.json', {
+  fetchWithTimeout('https://api.pushover.net/1/messages.json', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -322,7 +314,8 @@ function sendPushover(title: string, message: string): void {
       title,
       message,
       priority: '1'
-    })
+    }),
+    timeout: 10000
   }).catch(err => {
     console.error(`Pushover failed: ${err.message}`);
   });
@@ -388,9 +381,7 @@ async function handleOneOnOneMeeting(data: MeetingData, personName: string): Pro
   const oneOnOneFilename = `1 <> 1 ${personName}.md`;
   const oneOnOnePath = join(VAULT_PATH, '..', '1 <> 1', oneOnOneFilename);
   
-  const dateStr = data.startTime.toLocaleDateString('en-US', { 
-    year: 'numeric', month: 'numeric', day: 'numeric', timeZone: 'America/Los_Angeles'
-  });
+  const dateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   
   try {
     await access(oneOnOnePath);
@@ -408,9 +399,7 @@ async function handleOneOnOneMeeting(data: MeetingData, personName: string): Pro
     // Create new section for this meeting
     const newSection = `## [[${dateStr}]]
 
-### Meeting Notes
 ${data.panelContent || ''}
-${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
 \n---\n`;
     
     // Insert after the button (find button and insert after it)
@@ -420,7 +409,6 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
     );
     
     // Track this synced meeting ID
-    const syncedMeetings = parsed.data.synced_meetings || [];
     if (!syncedMeetings.includes(data.id)) {
       syncedMeetings.push(data.id);
     }
@@ -449,9 +437,7 @@ action:
 \`\`\`
 ## [[${dateStr}]]
 
-### Meeting Notes
 ${data.panelContent || ''}
-${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
 `;
     
     frontmatter.synced_meetings = [data.id];
@@ -468,9 +454,7 @@ async function handleRecurringMeeting(data: MeetingData, meetingName: string): P
   const recurringFilename = `${meetingName}.md`;
   const recurringPath = join(VAULT_PATH, '..', 'Recurring', recurringFilename);
   
-  const dateStr = data.startTime.toLocaleDateString('en-US', { 
-    year: 'numeric', month: 'numeric', day: 'numeric', timeZone: 'America/Los_Angeles'
-  });
+  const dateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   
   try {
     await access(recurringPath);
@@ -483,24 +467,25 @@ async function handleRecurringMeeting(data: MeetingData, meetingName: string): P
       return { success: false, action: `Already synced to ${meetingName}`, filePath: recurringPath };
     }
     
-    // Append to it
-    
     // Create new section for this meeting
-    const newSection = `## [[${dateStr}]]
+    const newSection = `# ${dateStr}
 
-### Meeting Notes
 ${data.panelContent || ''}
-${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
-\n---\n`;
+
+---\n`;
+    
+    // Insert after the button (find button and insert after it)
+    const updatedContent = parsed.content.replace(
+      /(\`\`\`meta-bind-button[\s\S]*?\`\`\`)\n/,
+      `$1\n${newSection}`
+    );
     
     // Track this synced meeting ID
-    const syncedMeetings = parsed.data.synced_meetings || [];
     if (!syncedMeetings.includes(data.id)) {
       syncedMeetings.push(data.id);
     }
     parsed.data.synced_meetings = syncedMeetings;
     
-    const updatedContent = parsed.content + `\n${newSection}`;
     const updated = matter.stringify(updatedContent, parsed.data);
     await writeFile(recurringPath, updated, 'utf-8');
     await logToDaily(data.startTime, 'Appended to', meetingName);
@@ -513,11 +498,18 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
     
     const newContent = `# ${meetingName}
 
-## [[${dateStr}]]
+\`\`\`meta-bind-button
+style: primary
+label: Add Meeting Notes
+id: meeting
+action:
+  type: "replaceSelf" 
+  replacement: x/Templates/1 <> 1 Recurring Section Template 
+  templater: true
+\`\`\`
+# ${dateStr}
 
-### Meeting Notes
 ${data.panelContent || ''}
-${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
 `;
     
     frontmatter.synced_meetings = [data.id];
@@ -734,15 +726,26 @@ async function logToDaily(date: Date, action: string, targetName: string): Promi
   }
 }
 
+// FETCH WITH TIMEOUT
+function fetchWithTimeout(url: string, options: RequestInit & { timeout?: number } = {}): Promise<Response> {
+  const timeout = options.timeout || 30000; // Default 30 seconds
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timeoutId));
+}
+
 // PANEL API FUNCTION
 async function getPanels(documentId: string, token: string): Promise<Panel[]> {
-  const response = await fetch(`${API_BASE}/get-document-panels`, {
+  const response = await fetchWithTimeout(`${API_BASE}/get-document-panels`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ document_id: documentId })
+    body: JSON.stringify({ document_id: documentId }),
+    timeout: 30000
   });
 
   if (!response.ok) {
@@ -763,21 +766,47 @@ async function main(): Promise<void> {
   console.log(`   Found ${existingMeetings.length} existing meetings`);
 
   // 2. GET AUTH TOKEN
+  let token: string | undefined;
   const tokenData = JSON.parse(await readFile(TOKEN_PATH, 'utf-8'));
-  const tokens = JSON.parse(tokenData.workos_tokens);
-  const token = tokens.access_token;
+
+  // Try to get token from access_token field
+  if (tokenData.access_token) {
+    token = tokenData.access_token;
+  } else if (typeof tokenData.cognito_tokens === 'string' && tokenData.cognito_tokens.length > 0) {
+    // Try parsing cognito_tokens as JSON
+    try {
+      const cognitoTokens = JSON.parse(tokenData.cognito_tokens);
+      if (cognitoTokens.access_token) {
+        token = cognitoTokens.access_token;
+      }
+    } catch (e) {
+      // If parsing cognito_tokens as JSON fails, assume it's the token itself
+      token = tokenData.cognito_tokens;
+    }
+  } else if (typeof tokenData.workos_tokens === 'string' && tokenData.workos_tokens.length > 0) {
+    try {
+      const workosTokens = JSON.parse(tokenData.workos_tokens);
+      if (workosTokens.access_token) {
+        token = workosTokens.access_token;
+      }
+    } catch (e) {
+      // If parsing workos_tokens as JSON fails, assume workos_tokens itself is the token.
+      token = tokenData.workos_tokens;
+    }
+  }
   
   if (!token) throw new Error('No auth token found');
 
   // 3. FETCH PAST/PROCESSED MEETINGS FROM API
   console.log('\n📥 Fetching processed meetings from API...');
-  const docsResponse = await fetch(`${API_BASE}/get-documents`, {
+  const docsResponse = await fetchWithTimeout(`${API_BASE}/get-documents`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ limit: config.meetingsLimit })
+    body: JSON.stringify({ limit: config.meetingsLimit }),
+    timeout: 30000
   });
 
   if (!docsResponse.ok) {
@@ -813,15 +842,24 @@ async function main(): Promise<void> {
       continue;
     }
     
+    // CATEGORIZE MEETING FIRST (before duplicate check) - so we know what type it should be
+    const category = categorizeMeeting(meeting.title);
+    
     // Check if we already have a filed meeting with this Granola ID
     const existingFiledMeeting = existingMeetings.find(em => 
       em.id === meeting.id && em.status === 'filed' && !em.isDeleted
     );
     
-    if (existingFiledMeeting) {
+    // For 1:1 and recurring meetings, allow reprocessing even if it exists as ad-hoc
+    // This handles cases where a meeting was previously created as ad-hoc but should be in a 1:1 or recurring file
+    if (existingFiledMeeting && category.type === 'adHoc') {
+      // Only skip ad-hoc meetings that already exist
       console.log(`⏭️  Already exists: ${meeting.title}`);
       continue;
     }
+    
+    // Note: 1:1 and recurring meetings will proceed even if they exist as ad-hoc,
+    // and they'll be added to the correct 1:1/recurring file via handleOneOnOneMeeting/handleRecurringMeeting
     
     // Check if meeting has panels (required for sync)
     let panels: Panel[] = [];
@@ -839,21 +877,23 @@ async function main(): Promise<void> {
     
     // Fetch metadata and transcript
     const [metaResponse, transcriptResponse] = await Promise.all([
-      fetch(`${API_BASE}/get-document-metadata`, {
+      fetchWithTimeout(`${API_BASE}/get-document-metadata`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ document_id: meeting.id })
+        body: JSON.stringify({ document_id: meeting.id }),
+        timeout: 30000
       }),
-      fetch(`${API_BASE}/get-document-transcript`, {
+      fetchWithTimeout(`${API_BASE}/get-document-transcript`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ document_id: meeting.id })
+        body: JSON.stringify({ document_id: meeting.id }),
+        timeout: 30000
       })
     ]);
 
@@ -922,8 +962,7 @@ async function main(): Promise<void> {
       panelContent: panelContent
     };
     
-    // CATEGORIZE MEETING
-    const category = categorizeMeeting(meeting.title);
+    // category was already determined earlier
     let result: { success: boolean; action?: string; filePath?: string };
     
     if (category.type === 'oneOnOne' && category.targetName) {
