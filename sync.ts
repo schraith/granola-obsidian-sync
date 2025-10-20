@@ -642,7 +642,7 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
       .trim();
     
     const filename = `${dateTimeStr} ${cleanTitle}.md`;
-    filePath = join(VAULT_PATH, String(year), `${month}-${monthName}`, `${day}-${dayName}`, filename);
+    filePath = join(VAULT_PATH, 'Ad-hoc', filename);
 
     // Skip if file exists
     try {
