@@ -41,6 +41,8 @@ const config = {
   // Meeting processing config
   enableMeetingProcessing: process.env.ENABLE_MEETING_PROCESSING === 'true',
   vaultOpsScriptPath: process.env.VAULT_OPS_SCRIPT_PATH,
+  // Debug logging
+  debug: process.env.DEBUG === 'true',
   // Pushover config for future use
   pushover: {
     userKey: process.env.PUSHOVER_USER_KEY,
@@ -851,7 +853,7 @@ async function main(): Promise<void> {
     const existingMeeting = existingMeetings.find(em => em.id === meeting.id);
     
     if (existingMeeting?.isDeleted) {
-      console.log(`🗑️  Skipping deleted: ${meeting.title}`);
+      if (config.debug) console.log(`🗑️  Skipping deleted: ${meeting.title}`);
       continue;
     }
     
@@ -884,7 +886,7 @@ async function main(): Promise<void> {
     }
 
     if (!panels || panels.length === 0) {
-      console.log(`⏳ No panels yet: ${meeting.title}`);
+      if (config.debug) console.log(`⏳ No panels yet: ${meeting.title}`);
       continue;
     }
     
