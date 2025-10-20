@@ -212,11 +212,12 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
               const parsed = matter(content);
               if (parsed.data.source === 'granola' && parsed.data.calendar_event_id) {
                 deletedIds.add(parsed.data.calendar_event_id);
-                if (debug) console.log(`   Found in trash: ${parsed.data.title || entry.name}`);
+                const meetingTitle = ensureTitle(parsed.data.title || entry.name);
+                if (debug) console.log(`   Found in trash: ${meetingTitle}`);
                 // Add to meetings array with isDeleted flag
                 meetings.push({
                   filePath: fullPath,
-                  title: parsed.data.title || entry.name,
+                  title: meetingTitle,
                   startTime: new Date(parsed.data.start_time || ''),
                   status: parsed.data.status || 'filed',
                   id: parsed.data.calendar_event_id,
@@ -264,7 +265,7 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
             if (frontmatter.source === 'granola' && frontmatter.calendar_event_id) {
               meetings.push({
                 filePath: fullPath,
-                title: frontmatter.title || '',
+                title: ensureTitle(frontmatter.title),
                 startTime: new Date(frontmatter.start_time || ''),
                 status: frontmatter.status || 'scheduled',
                 id: frontmatter.calendar_event_id,
@@ -858,12 +859,12 @@ async function main(): Promise<void> {
     const existingMeeting = existingMeetings.find(em => em.id === meeting.id);
     
     if (existingMeeting?.isDeleted) {
-      if (config.debug) console.log(`🗑️  Skipping deleted: ${meeting.title}`);
+      if (config.debug) console.log(`🗑️  Skipping deleted: ${ensureTitle(meeting.title)}`);
       continue;
     }
     
     // CATEGORIZE MEETING FIRST (before duplicate check) - so we know what type it should be
-    const category = categorizeMeeting(meeting.title);
+    const category = categorizeMeeting(ensureTitle(meeting.title));
     
     // Check if we already have a filed meeting with this Granola ID
     const existingFiledMeeting = existingMeetings.find(em => 
@@ -874,7 +875,7 @@ async function main(): Promise<void> {
     // This handles cases where a meeting was previously created as ad-hoc but should be in a 1:1 or recurring file
     if (existingFiledMeeting && category.type === 'adHoc') {
       // Only skip ad-hoc meetings that already exist
-      console.log(`⏭️  Already exists: ${meeting.title}`);
+      console.log(`⏭️  Already exists: ${ensureTitle(meeting.title)}`);
       continue;
     }
     
@@ -886,12 +887,12 @@ async function main(): Promise<void> {
     try {
       panels = await getPanels(meeting.id, token);
     } catch (error) {
-      console.log(`⚠️  Failed to fetch panels for ${meeting.title} - skipping`);
+      console.log(`⚠️  Failed to fetch panels for ${ensureTitle(meeting.title)} - skipping`);
       continue;
     }
 
     if (!panels || panels.length === 0) {
-      if (config.debug) console.log(`⏳ No panels yet: ${meeting.title}`);
+      if (config.debug) console.log(`⏳ No panels yet: ${ensureTitle(meeting.title)}`);
       continue;
     }
     
@@ -918,7 +919,7 @@ async function main(): Promise<void> {
     ]);
 
     if (!metaResponse.ok || !transcriptResponse.ok) {
-      const error = `Failed to fetch data for ${meeting.title} - skipping`;
+      const error = `Failed to fetch data for ${ensureTitle(meeting.title)} - skipping`;
       console.error(error);
       sendPushover('Granola Sync Warning', error);
       continue;
@@ -932,22 +933,22 @@ async function main(): Promise<void> {
     const skipCheck = shouldSkipPastMeeting({
       attendees: metadata.attendees || [],
       transcript: processedTranscript,
-      title: meeting.title
+      title: ensureTitle(meeting.title)
     });
     
     if (skipCheck.skip) {
-      console.log(`⏭️  Skipping past meeting: ${meeting.title} (${skipCheck.reason})`);
+      console.log(`⏭️  Skipping past meeting: ${ensureTitle(meeting.title)} (${skipCheck.reason})`);
       skippedCount++;
       continue;
     }
     
     // Only do full transcript processing if we're syncing transcripts for this meeting
-    const finalTranscript = shouldSyncTranscript(meeting.title) ? processedTranscript : '';
+    const finalTranscript = shouldSyncTranscript(ensureTitle(meeting.title)) ? processedTranscript : '';
     
     // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
     if (isPastMeeting(meeting)) {
       if (!hasContent(transcriptData, panels)) {
-        console.log(`⏭️  Skipping empty: ${meeting.title} (0 segments, ${panels.length} panels)`);
+        console.log(`⏭️  Skipping empty: ${ensureTitle(meeting.title)} (0 segments, ${panels.length} panels)`);
         skippedCount++;
         continue;
       }
@@ -965,7 +966,7 @@ async function main(): Promise<void> {
         panelContent = processPanels(sortedPanels);
       }
     } catch (error) {
-      console.error(`Failed to process panels for "${meeting.title}":`, error);
+      console.error(`Failed to process panels for "${ensureTitle(meeting.title)}":`, error);
       // Continue without panels - don't break existing functionality
     }
     
