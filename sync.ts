@@ -540,7 +540,16 @@ ${data.panelContent || ''}
 }
 
 // CREATE AD HOC MEETING FILE
-async function handleAdHocMeeting(data: MeetingData): Promise<{ success: boolean; action: string; filePath?: string }> {
+async function handleAdHocMeeting(data: MeetingData, existingMeetings: ExistingMeeting[]): Promise<{ success: boolean; action: string; filePath?: string }> {
+  // Check if this meeting already exists anywhere with the same calendar_event_id
+  const existingMeeting = existingMeetings.find(em => 
+    em.id === data.id && em.status === 'filed' && !em.isDeleted
+  );
+  
+  if (existingMeeting) {
+    return { success: false, action: `Already exists`, filePath: existingMeeting.filePath };
+  }
+  
   const pacificDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   
   const cleanTitle = data.title
@@ -558,19 +567,6 @@ async function handleAdHocMeeting(data: MeetingData): Promise<{ success: boolean
   
   const filename = `${pacificDateStr} - ${cleanTitle}.md`;
   const filePath = join(VAULT_PATH, filename);
-  
-  // Check if file already exists with this meeting ID
-  try {
-    await access(filePath);
-    // File exists - check if it's the same meeting
-    const content = await readFile(filePath, 'utf-8');
-    const parsed = matter(content);
-    if (parsed.data.calendar_event_id === data.id) {
-      return { success: false, action: `Already exists: ${cleanTitle}`, filePath };
-    }
-  } catch {
-    // File doesn't exist, continue
-  }
   
   // Extract attendee names
   const attendeeNames = data.attendees.map(a => a.split(' <')[0]);
@@ -1002,7 +998,7 @@ async function main(): Promise<void> {
       result = await handleRecurringMeeting(meetingData, category.targetName);
     } else {
       // Ad hoc meeting
-      result = await handleAdHocMeeting(meetingData);
+      result = await handleAdHocMeeting(meetingData, existingMeetings);
     }
     
     if (result.success && result.filePath) {
