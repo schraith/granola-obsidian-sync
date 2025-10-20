@@ -10,6 +10,7 @@
     "cheerio": "^1.1.2",
     "dotenv": "^17.2.1",
     "gray-matter": "^4.0.3",
+    "pushover-notifications": "^1.2.3",
     "turndown": "^7.2.1"
   },
   "devDependencies": {

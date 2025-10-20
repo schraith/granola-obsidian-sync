@@ -123,7 +123,7 @@ Add to crontab with `crontab -e`:
    - Processes transcripts with speaker identification and deduplication
    - Processes panels with template-specific sorting
 6. **File Organization**: Creates year/month/day folder structure in Obsidian vault
-7. **Smart Filename**: `YYYY-MM-DD HHMM {title} -- {shortId}.md` (Eastern timezone)
+7. **Smart Filename**: `YYYY-MM-DD HHMM {title} -- {shortId}.md` (Pacific timezone)
 8. **Deduplication**: Updates existing scheduled meetings when they become filed
 9. **External Processing**: Optionally calls external script for further automation
 
@@ -150,7 +150,7 @@ temp/                 # temporary files (git ignored)
 - **Skips**: Solo meetings, meetings without transcripts/panels, existing files
 - **Processes**: Past meetings with panels and transcript content
 - **Updates**: Scheduled meetings that become filed meetings
-- **Timezone**: All operations use Eastern US timezone for consistency
+- **Timezone**: All operations use Pacific US timezone for consistency
 
 ## Failure Behavior
 

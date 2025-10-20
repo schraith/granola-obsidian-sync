@@ -7,6 +7,7 @@
         "cheerio": "^1.1.2",
         "dotenv": "^17.2.1",
         "gray-matter": "^4.0.3",
+        "pushover-notifications": "^1.2.3",
         "turndown": "^7.2.1",
       },
       "devDependencies": {
@@ -75,6 +76,8 @@
     "parse5-htmlparser2-tree-adapter": ["parse5-htmlparser2-tree-adapter@7.1.0", "", { "dependencies": { "domhandler": "^5.0.3", "parse5": "^7.0.0" } }, "sha512-ruw5xyKs6lrpo9x9rCZqZZnIUntICjQAd0Wsmp396Ul9lN/h+ifgVV1x1gZHi8euej6wTfpqX8j+BFQxF0NS/g=="],
 
     "parse5-parser-stream": ["parse5-parser-stream@7.1.2", "", { "dependencies": { "parse5": "^7.0.0" } }, "sha512-JyeQc9iwFLn5TbvvqACIF/VXG6abODeB3Fwmv/TGdLk2LfbWkaySGY72at4+Ty7EkPZj854u4CrICqNk2qIbow=="],
+
+    "pushover-notifications": ["pushover-notifications@1.2.3", "", {}, "sha512-jVfniktfi8nYS5f1QsHs/fFAkzSaHYUcmn4CFOMMsv2wvvxvMgSJdjkdoRR0BqQU6uYs2QJs41PQhbqa1TkAIg=="],
 
     "safer-buffer": ["safer-buffer@2.1.2", "", {}, "sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg=="],
 

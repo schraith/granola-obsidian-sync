@@ -300,19 +300,19 @@ function normalizeAttendee(attendee: { name?: string; email?: string }): string 
 
 // SHARED FUNCTION TO PROCESS AND WRITE MEETINGS  
 async function processAndWriteMeeting(data: MeetingData, existingMeeting?: ExistingMeeting): Promise<{ success: boolean; filePath?: string }> {
-  // Convert to Eastern timezone for folder structure (use direct toLocaleDateString with timezone)
-  const year = parseInt(data.startTime.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/New_York' }));
-  const month = String(parseInt(data.startTime.toLocaleDateString('en-US', { month: 'numeric', timeZone: 'America/New_York' }))).padStart(2, '0');
-  const monthName = data.startTime.toLocaleDateString('en-US', { month: 'long', timeZone: 'America/New_York' });
-  const day = String(parseInt(data.startTime.toLocaleDateString('en-US', { day: 'numeric', timeZone: 'America/New_York' }))).padStart(2, '0');
-  const dayName = data.startTime.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/New_York' });
+  // Convert to Pacific timezone for folder structure (use direct toLocaleDateString with timezone)
+  const year = parseInt(data.startTime.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/Los_Angeles' }));
+  const month = String(parseInt(data.startTime.toLocaleDateString('en-US', { month: 'numeric', timeZone: 'America/Los_Angeles' }))).padStart(2, '0');
+  const monthName = data.startTime.toLocaleDateString('en-US', { month: 'long', timeZone: 'America/Los_Angeles' });
+  const day = String(parseInt(data.startTime.toLocaleDateString('en-US', { day: 'numeric', timeZone: 'America/Los_Angeles' }))).padStart(2, '0');
+  const dayName = data.startTime.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/Los_Angeles' });
   
-  // For filename timestamp, use Eastern timezone as well
-  const easternDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-  const easternTimeStr = data.startTime.toLocaleTimeString('en-US', { 
-    hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' 
+  // For filename timestamp, use Pacific timezone as well
+  const pacificDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const pacificTimeStr = data.startTime.toLocaleTimeString('en-US', { 
+    hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' 
   }).replace(':', '');
-  const dateStr = `${easternDateStr} ${easternTimeStr}`;
+  const dateStr = `${pacificDateStr} ${pacificTimeStr}`;
 
   // Use existing file path if updating, otherwise create new path
   let filePath: string;

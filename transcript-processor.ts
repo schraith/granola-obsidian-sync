@@ -234,19 +234,7 @@ export function shouldSkipPastMeeting(meeting: {
   durationInMinutes?: number;
   title?: string;
 }): { skip: boolean; reason?: string } {
-  const attendees = meeting.attendees || [];
-  
-  // No attendees = solo meeting
-  if (attendees.length === 0) {
-    return { skip: true, reason: 'No attendees (solo meeting)' };
-  }
-  
-  // Check if all attendees are owner's email addresses
-  const nonOwnerAttendees = attendees.filter(a => a.email && !OWNER_EMAILS.has(a.email));
-  
-  if (nonOwnerAttendees.length === 0) {
-    return { skip: true, reason: 'Solo meeting (only owner\'s emails)' };
-  }
+  // Don't filter based on attendees - sync all meetings recorded by Granola
   
   // Check for empty transcript
   const transcript = meeting.transcript || '';
