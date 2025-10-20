@@ -540,16 +540,7 @@ ${data.panelContent || ''}
 }
 
 // CREATE AD HOC MEETING FILE
-async function handleAdHocMeeting(data: MeetingData, existingMeetings: ExistingMeeting[]): Promise<{ success: boolean; action: string; filePath?: string }> {
-  // Check if this meeting already exists anywhere with the same calendar_event_id
-  const existingMeeting = existingMeetings.find(em => 
-    em.id === data.id && em.status === 'filed' && !em.isDeleted
-  );
-  
-  if (existingMeeting) {
-    return { success: false, action: `Already exists`, filePath: existingMeeting.filePath };
-  }
-  
+async function handleAdHocMeeting(data: MeetingData): Promise<{ success: boolean; action: string; filePath?: string }> {
   const pacificDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   
   const cleanTitle = data.title
@@ -872,9 +863,9 @@ async function main(): Promise<void> {
     // CATEGORIZE MEETING FIRST (before duplicate check) - so we know what type it should be
     const category = categorizeMeeting(ensureTitle(meeting.title));
     
-    // Check if we already have a filed meeting with this Granola ID
+    // Check if we already have a filed meeting with this Granola ID (any status)
     const existingFiledMeeting = existingMeetings.find(em => 
-      em.id === meeting.id && em.status === 'filed' && !em.isDeleted
+      em.id === meeting.id && !em.isDeleted
     );
     
     // For 1:1 and recurring meetings, allow reprocessing even if it exists as ad-hoc
@@ -882,6 +873,12 @@ async function main(): Promise<void> {
     if (existingFiledMeeting && category.type === 'adHoc') {
       // Only skip ad-hoc meetings that already exist
       console.log(`⏭️  Already exists: ${ensureTitle(meeting.title)}`);
+      continue;
+    }
+    
+    // Also skip if any meeting type already exists
+    if (existingFiledMeeting && existingFiledMeeting.id === meeting.id && category.type !== 'adHoc') {
+      if (config.debug) console.log(`Already synced: ${ensureTitle(meeting.title)}`);
       continue;
     }
     
@@ -998,7 +995,7 @@ async function main(): Promise<void> {
       result = await handleRecurringMeeting(meetingData, category.targetName);
     } else {
       // Ad hoc meeting
-      result = await handleAdHocMeeting(meetingData, existingMeetings);
+      result = await handleAdHocMeeting(meetingData);
     }
     
     if (result.success && result.filePath) {
