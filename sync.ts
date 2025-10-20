@@ -57,6 +57,15 @@ if (config.enableMeetingProcessing) {
 
 // --- END CONFIGURATION ---
 
+// Load meeting mappings
+let meetingMappings: { oneOnOne: Record<string, string>; recurring: Record<string, string> } = { oneOnOne: {}, recurring: {} };
+try {
+  const mappingsContent = await readFile(join(dirname(import.meta.path || ''), 'meeting-mappings.json'), 'utf-8');
+  meetingMappings = JSON.parse(mappingsContent);
+} catch (error) {
+  console.warn('⚠️  Could not load meeting-mappings.json, proceeding without meeting categorization');
+}
+
 const API_BASE = 'https://api.granola.ai/v1';
 const VAULT_PATH = config.obsidianVaultPath;
 const TOKEN_PATH = config.granolaAuthPath;
@@ -139,6 +148,33 @@ function isWithinTimeWindow(time1: Date, time2: Date): boolean {
   const diffMs = Math.abs(time1.getTime() - time2.getTime());
   const diffHours = diffMs / (1000 * 60 * 60);
   return diffHours <= 12;
+}
+
+// MEETING CATEGORIZATION
+interface MeetingCategory {
+  type: 'oneOnOne' | 'recurring' | 'adHoc';
+  targetName?: string; // For 1:1 and recurring, the file to append to
+}
+
+function categorizeMeeting(title: string): MeetingCategory {
+  const titleLower = title.toLowerCase();
+  
+  // Check for 1:1 matches
+  for (const [keyword, name] of Object.entries(meetingMappings.oneOnOne)) {
+    if (titleLower.includes(keyword.toLowerCase())) {
+      return { type: 'oneOnOne', targetName: name };
+    }
+  }
+  
+  // Check for recurring matches
+  for (const [keyword, name] of Object.entries(meetingMappings.recurring)) {
+    if (titleLower.includes(keyword.toLowerCase())) {
+      return { type: 'recurring', targetName: name };
+    }
+  }
+  
+  // Default to ad hoc
+  return { type: 'adHoc' };
 }
 
 // VAULT INDEXING - SCAN EXISTING MEETING FILES (INCLUDING TRASHED)
@@ -347,7 +383,167 @@ function normalizeAttendee(attendee: { name?: string; email?: string }): string 
   return hasValidName ? `${attendee.name} <${attendee.email}>` : attendee.email || '';
 }
 
-// SHARED FUNCTION TO PROCESS AND WRITE MEETINGS  
+// CREATE OR APPEND TO 1:1 MEETING FILE
+async function handleOneOnOneMeeting(data: MeetingData, personName: string): Promise<{ success: boolean; action: string; filePath?: string }> {
+  const oneOnOneFilename = `1 <> 1 ${personName}.md`;
+  const oneOnOnePath = join(VAULT_PATH, '..', '1 <> 1', oneOnOneFilename);
+  
+  const dateStr = data.startTime.toLocaleDateString('en-US', { 
+    year: 'numeric', month: 'numeric', day: 'numeric', timeZone: 'America/Los_Angeles'
+  });
+  
+  try {
+    await access(oneOnOnePath);
+    // File exists - append to it
+    const content = await readFile(oneOnOnePath, 'utf-8');
+    const parsed = matter(content);
+    
+    // Create new section for this meeting
+    const newSection = `## [[${dateStr}]]
+
+### Meeting Notes
+${data.panelContent || ''}
+${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
+\n---\n`;
+    
+    // Insert after the button (find button and insert after it)
+    const updatedContent = parsed.content.replace(
+      /(\`\`\`meta-bind-button[\s\S]*?\`\`\`)\n/,
+      `$1\n${newSection}`
+    );
+    
+    const updated = matter.stringify(updatedContent, parsed.data);
+    await writeFile(oneOnOnePath, updated, 'utf-8');
+    return { success: true, action: `Appended to [[1 <> 1 ${personName}]]`, filePath: oneOnOnePath };
+  } catch (error) {
+    // File doesn't exist - create it
+    const frontmatter = {
+      collection: ['[[1 <> 1]]']
+    };
+    
+    const newContent = `# [[${personName}]]
+
+\`\`\`meta-bind-button
+style: primary
+label: Add Meeting Notes
+id: meeting
+action:
+  type: "replaceSelf" 
+  replacement: x/Templates/1 <> 1 Recurring Section Template 
+  templater: true
+\`\`\`
+## [[${dateStr}]]
+
+### Meeting Notes
+${data.panelContent || ''}
+${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
+`;
+    
+    const markdown = matter.stringify(newContent, frontmatter);
+    await mkdir(dirname(oneOnOnePath), { recursive: true });
+    await writeFile(oneOnOnePath, markdown, 'utf-8');
+    return { success: true, action: `Created new 1 <> 1 ${personName}`, filePath: oneOnOnePath };
+  }
+}
+
+// CREATE OR APPEND TO RECURRING MEETING FILE
+async function handleRecurringMeeting(data: MeetingData, meetingName: string): Promise<{ success: boolean; action: string; filePath?: string }> {
+  const recurringFilename = `${meetingName}.md`;
+  const recurringPath = join(VAULT_PATH, '..', 'Recurring', recurringFilename);
+  
+  const dateStr = data.startTime.toLocaleDateString('en-US', { 
+    year: 'numeric', month: 'numeric', day: 'numeric', timeZone: 'America/Los_Angeles'
+  });
+  
+  try {
+    await access(recurringPath);
+    // File exists - append to it
+    const content = await readFile(recurringPath, 'utf-8');
+    const parsed = matter(content);
+    
+    // Create new section for this meeting
+    const newSection = `## [[${dateStr}]]
+
+### Meeting Notes
+${data.panelContent || ''}
+${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
+\n---\n`;
+    
+    const updatedContent = parsed.content + `\n${newSection}`;
+    const updated = matter.stringify(updatedContent, parsed.data);
+    await writeFile(recurringPath, updated, 'utf-8');
+    return { success: true, action: `Appended to [[${meetingName}]]`, filePath: recurringPath };
+  } catch (error) {
+    // File doesn't exist - create it
+    const frontmatter = {
+      collection: ['[[Meetings]]']
+    };
+    
+    const newContent = `# ${meetingName}
+
+## [[${dateStr}]]
+
+### Meeting Notes
+${data.panelContent || ''}
+${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
+`;
+    
+    const markdown = matter.stringify(newContent, frontmatter);
+    await mkdir(dirname(recurringPath), { recursive: true });
+    await writeFile(recurringPath, markdown, 'utf-8');
+    return { success: true, action: `Created new recurring: ${meetingName}`, filePath: recurringPath };
+  }
+}
+
+// CREATE AD HOC MEETING FILE
+async function handleAdHocMeeting(data: MeetingData): Promise<{ success: boolean; action: string; filePath?: string }> {
+  const pacificDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  
+  const cleanTitle = data.title
+    .replace(/\//g, '･')
+    .replace(/\\/g, '･')
+    .replace(/:/g, '：')
+    .replace(/\*/g, '✱')
+    .replace(/\?/g, '？')
+    .replace(/"/g, '\'')  
+    .replace(/</g, '‹')
+    .replace(/>/g, '›')
+    .replace(/\|/g, '｜')
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  const filename = `${pacificDateStr} - ${cleanTitle}.md`;
+  const filePath = join(VAULT_PATH, '..', filename);
+  
+  // Extract attendee names
+  const attendeeNames = data.attendees.map(a => a.split(' <')[0]);
+  
+  const frontmatter = {
+    collection: ['[[Meetings]]'],
+    type: 'meeting',
+    date: data.startTime.toISOString().split('T')[0],
+    start_time: data.startTime.toISOString(),
+    end_time: data.endTime?.toISOString() || '',
+    attendees: attendeeNames,
+    source: 'granola',
+    calendar_event_id: data.id
+  };
+  
+  const content = `# ${data.title}
+
+## Summary
+
+${data.panelContent || ''}
+${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}`;
+  
+  const markdown = matter.stringify(content, frontmatter);
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, markdown, 'utf-8');
+  
+  return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
+}
+
+// SHARED FUNCTION TO PROCESS AND WRITE MEETINGS (LEGACY - for scheduled meetings)  
 async function processAndWriteMeeting(data: MeetingData, existingMeeting?: ExistingMeeting): Promise<{ success: boolean; filePath?: string }> {
   // Convert to Pacific timezone for folder structure (use direct toLocaleDateString with timezone)
   const year = parseInt(data.startTime.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/Los_Angeles' }));
@@ -633,23 +829,23 @@ async function main(): Promise<void> {
       panelContent: panelContent
     };
     
-    // DEDUPLICATION: Check for matching scheduled meeting
-    const matchingScheduledMeeting = findMatchingScheduledMeeting(meetingData, existingMeetings);
+    // CATEGORIZE MEETING
+    const category = categorizeMeeting(meeting.title);
+    let result: { success: boolean; action?: string; filePath?: string };
     
-    if (matchingScheduledMeeting) {
-      console.log(`🔄 Updating scheduled meeting: ${meeting.title} → ${matchingScheduledMeeting.filePath}`);
-      const result = await processAndWriteMeeting(meetingData, matchingScheduledMeeting);
-      if (result.success && result.filePath) {
-        processedCount++;
-        newlyProcessedMeetings.push({ filePath: result.filePath, data: meetingData });
-      }
+    if (category.type === 'oneOnOne' && category.targetName) {
+      result = await handleOneOnOneMeeting(meetingData, category.targetName);
+    } else if (category.type === 'recurring' && category.targetName) {
+      result = await handleRecurringMeeting(meetingData, category.targetName);
     } else {
-      // No matching scheduled meeting, create new filed meeting
-      const result = await processAndWriteMeeting(meetingData);
-      if (result.success && result.filePath) {
-        processedCount++;
-        newlyProcessedMeetings.push({ filePath: result.filePath, data: meetingData });
-      }
+      // Ad hoc meeting
+      result = await handleAdHocMeeting(meetingData);
+    }
+    
+    if (result.success && result.filePath) {
+      processedCount++;
+      console.log(`${result.action}`);
+      newlyProcessedMeetings.push({ filePath: result.filePath, data: meetingData });
     }
   }
 
