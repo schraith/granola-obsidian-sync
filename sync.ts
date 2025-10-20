@@ -138,6 +138,11 @@ function ensureTitle(title: string | undefined): string {
   return (title?.trim() || '').length > 0 ? title!.trim() : 'No Title Found';
 }
 
+// ESCAPE SPECIAL REGEX CHARACTERS IN REPLACEMENT STRINGS
+function escapeReplacement(str: string): string {
+  return str.replace(/\$/g, '$$$$');
+}
+
 // CHECK IF TRANSCRIPT SHOULD BE SYNCED FOR THIS MEETING
 function shouldSyncTranscript(title: string): boolean {
   // If no filters are configured, use global setting
@@ -418,7 +423,7 @@ ${data.panelContent || ''}
     // Insert after the button (find button and insert after it)
     const updatedContent = parsed.content.replace(
       /(\`\`\`meta-bind-button[\s\S]*?\`\`\`)\n/,
-      `$1\n${newSection}`
+      `$1\n${escapeReplacement(newSection)}`
     );
     
     // Track this synced meeting ID
@@ -490,7 +495,7 @@ ${data.panelContent || ''}
     // Insert after the button (find button and insert after it)
     const updatedContent = parsed.content.replace(
       /(\`\`\`meta-bind-button[\s\S]*?\`\`\`)\n/,
-      `$1\n${newSection}`
+      `$1\n${escapeReplacement(newSection)}`
     );
     
     // Track this synced meeting ID
@@ -715,7 +720,7 @@ async function logToDaily(date: Date, action: string, targetName: string): Promi
       // Append to existing section
       const updated = parsed.content.replace(
         /(# Synced Meetings\n)/,
-        `$1${logEntry}\n`
+        `$1${escapeReplacement(logEntry)}\n`
       );
       const markdown = matter.stringify(updated, parsed.data);
       await writeFile(dailyNotePath, markdown, 'utf-8');
@@ -740,7 +745,7 @@ async function logToDaily(date: Date, action: string, targetName: string): Promi
       // Add Synced Meetings section before Freewrite
       newContent = newContent.replace(
         /(# Freewrite)/,
-        `# Synced Meetings\n${logEntry}\n\n$1`
+        `# Synced Meetings\n${escapeReplacement(logEntry)}\n\n$1`
       );
       
       const markdown = matter.stringify(newContent, newFrontmatter);
