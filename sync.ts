@@ -133,6 +133,11 @@ function normalizeTitle(title: string): string {
     .trim();
 }
 
+// ENSURE TITLE IS NOT EMPTY
+function ensureTitle(title: string | undefined): string {
+  return (title?.trim() || '').length > 0 ? title!.trim() : 'No Title Found';
+}
+
 // CHECK IF TRANSCRIPT SHOULD BE SYNCED FOR THIS MEETING
 function shouldSyncTranscript(title: string): boolean {
   // If no filters are configured, use global setting
@@ -967,7 +972,7 @@ async function main(): Promise<void> {
     // Normalize data for shared function
     const meetingData: MeetingData = {
       id: meeting.id,
-      title: meeting.title,
+      title: ensureTitle(meeting.title),
       startTime: new Date(meeting.created_at),
       attendees: metadata.attendees?.map(normalizeAttendee).filter(Boolean) || [],
       organizer: metadata.creator?.name || '',
