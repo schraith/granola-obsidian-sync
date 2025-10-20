@@ -166,10 +166,15 @@ interface MeetingCategory {
 function categorizeMeeting(title: string): MeetingCategory {
   const titleLower = title.toLowerCase();
   
-  // Check for 1:1 matches
-  for (const [keyword, name] of Object.entries(meetingMappings.oneOnOne)) {
-    if (titleLower.includes(keyword.toLowerCase())) {
-      return { type: 'oneOnOne', targetName: name };
+  // Check for explicit 1:1 indicators
+  const hasOneOnOneIndicator = /\b(1\s*<>\s*1|1:1|1-1|meeting\s+with)\b/i.test(title);
+  
+  // Check for 1:1 matches (only if explicit indicator present)
+  if (hasOneOnOneIndicator) {
+    for (const [keyword, name] of Object.entries(meetingMappings.oneOnOne)) {
+      if (titleLower.includes(keyword.toLowerCase())) {
+        return { type: 'oneOnOne', targetName: name };
+      }
     }
   }
   
