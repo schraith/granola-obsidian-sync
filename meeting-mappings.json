@@ -1,0 +1,28 @@
+{
+  "oneOnOne": {
+    "Barry": "Barry Nelson",
+    "Krishan": "Krishan Yadav",
+    "Kris": "Kris Smith",
+    "Sanjay": "Sanjay Jain",
+    "Vik": "Vikas Ahlawat",
+    "Vikas": "Vikas Ahlawat",
+    "Hardik": "Hardik Gupta",
+    "Itisha": "Itisha Yadav",
+    "John": "John Mavros",
+    "Kashish": "Kashish Sharma",
+    "Kavya": "Kavya Shree",
+    "Parthh": "Parthh Dikshit",
+    "Prabhash": "Prabhash Shrivistava",
+    "Rachel": "Rachel Varghese",
+    "Saar": "Saar Bhatt"
+  },
+  "recurring": {
+    "Engineering Huddle": "Engineering Huddle - Daily",
+    "Data Engineering": "Data Engineering - Weekly",
+    "Technical Leadership": "Technical Leadership Team - Weekly",
+    "FactorLab All Company": "FactorLab All Company - Weekly",
+    "Tech Initiative Catchup": "Tech Initiative Catchup - Weekly",
+    "Weekly Technical Leadership Team Update": "Technical Leadership Team - Weekly",
+    "Weekly Recruitment Meeting || FactorLab": "Recruiting Meeting - Weekly"
+  }
+}
