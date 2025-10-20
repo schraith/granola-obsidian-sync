@@ -111,6 +111,7 @@ interface ExistingMeeting {
   startTime: Date;
   status: 'filed' | 'scheduled';
   id: string; // calendar_event_id from frontmatter
+  isDeleted?: boolean; // true if found in trash
 }
 
 // TITLE NORMALIZATION FOR MATCHING
@@ -140,9 +141,56 @@ function isWithinTimeWindow(time1: Date, time2: Date): boolean {
   return diffHours <= 12;
 }
 
-// VAULT INDEXING - SCAN EXISTING MEETING FILES
-async function indexVaultMeetings(vaultPath: string): Promise<ExistingMeeting[]> {
+// VAULT INDEXING - SCAN EXISTING MEETING FILES (INCLUDING TRASHED)
+async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = true): Promise<ExistingMeeting[]> {
   const meetings: ExistingMeeting[] = [];
+  const deletedIds = new Set<string>();
+  
+  // First, check .trash folder for deleted meetings if it exists
+  if (includeTrash) {
+    // The vault root for "Tronic Ideaverse" is at:
+    // /Users/kevinschraith/Obsidian/Tronic Ideaverse
+    // So we need to go up from the meetings path to find it
+    const vaultRoot = '/Users/kevinschraith/Obsidian/Tronic Ideaverse';
+    const trashPath = join(vaultRoot, '.trash');
+    
+    try {
+      await access(trashPath);
+      // Recursively scan trash for markdown files with Granola IDs
+      const scanTrash = async (dir: string): Promise<void> => {
+        const entries = await readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = join(dir, entry.name);
+          if (entry.isDirectory()) {
+            await scanTrash(fullPath);
+          } else if (entry.name.endsWith('.md')) {
+            try {
+              const content = await readFile(fullPath, 'utf-8');
+              const parsed = matter(content);
+              if (parsed.data.source === 'granola' && parsed.data.calendar_event_id) {
+                deletedIds.add(parsed.data.calendar_event_id);
+                console.log(`   Found in trash: ${parsed.data.title || entry.name}`);
+                // Add to meetings array with isDeleted flag
+                meetings.push({
+                  filePath: fullPath,
+                  title: parsed.data.title || entry.name,
+                  startTime: new Date(parsed.data.start_time || ''),
+                  status: parsed.data.status || 'filed',
+                  id: parsed.data.calendar_event_id,
+                  isDeleted: true
+                });
+              }
+            } catch {
+              // Skip files that can't be read
+            }
+          }
+        }
+      };
+      await scanTrash(trashPath);
+    } catch (error) {
+      // .trash doesn't exist or isn't accessible, that's fine
+    }
+  }
   
   try {
     const years = await readdir(vaultPath);
@@ -185,8 +233,9 @@ async function indexVaultMeetings(vaultPath: string): Promise<ExistingMeeting[]>
                   title: frontmatter.title || '',
                   startTime: new Date(frontmatter.start_time || ''),
                   status: frontmatter.status || 'scheduled',
-                  id: frontmatter.calendar_event_id
-                });
+                  id: frontmatter.calendar_event_id,
+                  isDeleted: deletedIds.has(frontmatter.calendar_event_id)
+                } as any);
               }
             } catch (error) {
               // Skip files that can't be parsed
@@ -311,8 +360,11 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
   const pacificDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
   const pacificTimeStr = data.startTime.toLocaleTimeString('en-US', { 
     hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' 
-  }).replace(':', '');
-  const dateStr = `${pacificDateStr} ${pacificTimeStr}`;
+  });
+  
+  // Format time as "14h30" instead of "14:30" or "1430"
+  const timeFormatted = pacificTimeStr.replace(':', 'h');
+  const dateTimeStr = `${pacificDateStr} ${timeFormatted}`;
 
   // Use existing file path if updating, otherwise create new path
   let filePath: string;
@@ -321,10 +373,21 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
     // Update existing scheduled meeting file
     filePath = existingMeeting.filePath;
   } else {
-    // Create new file path
-    const cleanTitle = data.title.replace(/[^\w\s-]/g, '').replace(/\s+/g, ' ').trim();
-    const shortId = data.id.substring(0, 8);
-    const filename = `${dateStr} ${cleanTitle} -- ${shortId}.md`;
+    // Create new file path with smart character replacements
+    const cleanTitle = data.title
+      .replace(/\//g, '･')      // Replace / with middle dot
+      .replace(/\\/g, '･')     // Replace \ with middle dot
+      .replace(/:/g, '：')       // Replace : with full-width colon
+      .replace(/\*/g, '✱')      // Replace * with asterisk operator
+      .replace(/\?/g, '？')      // Replace ? with full-width question mark
+      .replace(/"/g, '\'')      // Replace " with single quote
+      .replace(/</g, '‹')        // Replace < with single left angle quote
+      .replace(/>/g, '›')        // Replace > with single right angle quote
+      .replace(/\|/g, '｜')      // Replace | with full-width vertical bar
+      .replace(/\s+/g, ' ')     // Normalize spaces
+      .trim();
+    
+    const filename = `${dateTimeStr} ${cleanTitle}.md`;
     filePath = join(VAULT_PATH, String(year), `${month}-${monthName}`, `${day}-${dayName}`, filename);
 
     // Skip if file exists
@@ -359,10 +422,6 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
   const content = data.status === 'filed'
     ? `# ${data.title}
 
-## Agenda
-
-## Tasks
-
 ## Summary
 
 ${data.panelContent || ''}${shouldSyncTranscript(data.title) && data.transcript ? `
@@ -370,8 +429,6 @@ ${data.panelContent || ''}${shouldSyncTranscript(data.title) && data.transcript 
 ## Transcript
 ${data.transcript}` : ''}`
     : `# ${data.title}
-
-## Agenda
 
 ## Notes
 
@@ -384,7 +441,7 @@ ${data.transcript}` : ''}`
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, markdown, 'utf-8');
   
-  console.log(data.status === 'filed' ? `✓ ${data.title}` : `📅 ${data.title} (${dateStr})`);
+  console.log(data.status === 'filed' ? `✓ ${data.title}` : `📅 ${data.title} (${dateTimeStr})`);
   return { success: true, filePath };
 }
 
@@ -459,9 +516,17 @@ async function main(): Promise<void> {
   // 4. PROCESS PAST MEETINGS (FILED MEETINGS WITH DEDUPLICATION)
   console.log('\n📝 Processing past meetings...');
   for (const meeting of meetings) {
+    // Check if meeting was deleted (in trash)
+    const existingMeeting = existingMeetings.find(em => em.id === meeting.id);
+    
+    if (existingMeeting?.isDeleted) {
+      console.log(`🗑️  Skipping deleted: ${meeting.title}`);
+      continue;
+    }
+    
     // Check if we already have a filed meeting with this Granola ID
     const existingFiledMeeting = existingMeetings.find(em => 
-      em.id === meeting.id && em.status === 'filed'
+      em.id === meeting.id && em.status === 'filed' && !em.isDeleted
     );
     
     if (existingFiledMeeting) {

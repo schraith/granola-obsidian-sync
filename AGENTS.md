@@ -28,7 +28,7 @@
 
 ## Commit & Pull Request Guidelines
 - Commits: follow Conventional Commits (`feat:`, `fix:`, `docs:`, optional `[scope]`). Keep messages imperative and concise.
-- PRs must include: purpose/summary, linked issues, config changes (env vars/flags), screenshots or log excerpts, and before/after examples of generated filenames like `YYYY-MM-DD HHMM {title} -- {shortId}.md`.
+- PRs must include: purpose/summary, linked issues, config changes (env vars/flags), screenshots or log excerpts, and before/after examples of generated filenames like `YYYY-MM-DD HHhMM {title}.md`.
 - Touch only related files; keep diffs small and reversible.
 
 ## Security & Configuration Tips
