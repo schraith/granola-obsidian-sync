@@ -414,6 +414,7 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
     
     const updated = matter.stringify(updatedContent, parsed.data);
     await writeFile(oneOnOnePath, updated, 'utf-8');
+    await logToDaily(data.startTime, 'Appended to', `1 <> 1 ${personName}`);
     return { success: true, action: `Appended to [[1 <> 1 ${personName}]]`, filePath: oneOnOnePath };
   } catch (error) {
     // File doesn't exist - create it
@@ -442,6 +443,7 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(oneOnOnePath), { recursive: true });
     await writeFile(oneOnOnePath, markdown, 'utf-8');
+    await logToDaily(data.startTime, 'Created', `1 <> 1 ${personName}`);
     return { success: true, action: `Created new 1 <> 1 ${personName}`, filePath: oneOnOnePath };
   }
 }
@@ -472,6 +474,7 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
     const updatedContent = parsed.content + `\n${newSection}`;
     const updated = matter.stringify(updatedContent, parsed.data);
     await writeFile(recurringPath, updated, 'utf-8');
+    await logToDaily(data.startTime, 'Appended to', meetingName);
     return { success: true, action: `Appended to [[${meetingName}]]`, filePath: recurringPath };
   } catch (error) {
     // File doesn't exist - create it
@@ -491,6 +494,7 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(recurringPath), { recursive: true });
     await writeFile(recurringPath, markdown, 'utf-8');
+    await logToDaily(data.startTime, 'Created recurring', meetingName);
     return { success: true, action: `Created new recurring: ${meetingName}`, filePath: recurringPath };
   }
 }
@@ -539,6 +543,7 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
   const markdown = matter.stringify(content, frontmatter);
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, markdown, 'utf-8');
+  await logToDaily(data.startTime, 'Created ad hoc', cleanTitle);
   
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
 }
@@ -639,6 +644,64 @@ ${data.transcript}` : ''}`
   
   console.log(data.status === 'filed' ? `✓ ${data.title}` : `📅 ${data.title} (${dateTimeStr})`);
   return { success: true, filePath };
+}
+
+// DAILY NOTE LOGGING
+async function logToDaily(date: Date, action: string, targetName: string): Promise<void> {
+  const vaultRoot = '/Users/kevinschraith/Obsidian/Tronic Ideaverse';
+  const daysPath = join(vaultRoot, 'Calendar', 'Days');
+  
+  const dateStr = date.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const dailyNotePath = join(daysPath, `${dateStr}.md`);
+  
+  // Create "Synced Meetings" section entry
+  const logEntry = `- ${action} [[${targetName}]]`;
+  
+  try {
+    // Try to read existing daily note
+    const content = await readFile(dailyNotePath, 'utf-8');
+    const parsed = matter(content);
+    
+    // Check if "Synced Meetings" section exists
+    if (parsed.content.includes('# Synced Meetings')) {
+      // Append to existing section
+      const updated = parsed.content.replace(
+        /(# Synced Meetings\n)/,
+        `$1${logEntry}\n`
+      );
+      const markdown = matter.stringify(updated, parsed.data);
+      await writeFile(dailyNotePath, markdown, 'utf-8');
+    } else {
+      // Add new section
+      const synced = `\n# Synced Meetings\n${logEntry}\n`;
+      const updated = parsed.content + synced;
+      const markdown = matter.stringify(updated, parsed.data);
+      await writeFile(dailyNotePath, markdown, 'utf-8');
+    }
+  } catch (error) {
+    // Daily note doesn't exist - create it using template
+    try {
+      const templatePath = join(vaultRoot, 'x', 'Templates', 'Periodic Notes - Daily Template.md');
+      const templateContent = await readFile(templatePath, 'utf-8');
+      const parsed = matter(templateContent);
+      
+      // Create new daily note with date substitution
+      const newFrontmatter = { ...parsed.data, created: dateStr };
+      let newContent = parsed.content;
+      
+      // Add Synced Meetings section before Freewrite
+      newContent = newContent.replace(
+        /(# Freewrite)/,
+        `# Synced Meetings\n${logEntry}\n\n$1`
+      );
+      
+      const markdown = matter.stringify(newContent, newFrontmatter);
+      await mkdir(dirname(dailyNotePath), { recursive: true });
+      await writeFile(dailyNotePath, markdown, 'utf-8');
+    } catch (templateError) {
+      console.warn(`Could not create daily note for ${dateStr}:`, templateError);
+    }
+  }
 }
 
 // PANEL API FUNCTION
