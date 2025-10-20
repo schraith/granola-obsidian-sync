@@ -394,9 +394,16 @@ async function handleOneOnOneMeeting(data: MeetingData, personName: string): Pro
   
   try {
     await access(oneOnOnePath);
-    // File exists - append to it
+    // File exists - check if already synced
     const content = await readFile(oneOnOnePath, 'utf-8');
     const parsed = matter(content);
+    
+    const syncedMeetings = parsed.data.synced_meetings || [];
+    if (syncedMeetings.includes(data.id)) {
+      return { success: false, action: `Already synced to 1 <> 1 ${personName}`, filePath: oneOnOnePath };
+    }
+    
+    // Append to it
     
     // Create new section for this meeting
     const newSection = `## [[${dateStr}]]
@@ -411,6 +418,13 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
       /(\`\`\`meta-bind-button[\s\S]*?\`\`\`)\n/,
       `$1\n${newSection}`
     );
+    
+    // Track this synced meeting ID
+    const syncedMeetings = parsed.data.synced_meetings || [];
+    if (!syncedMeetings.includes(data.id)) {
+      syncedMeetings.push(data.id);
+    }
+    parsed.data.synced_meetings = syncedMeetings;
     
     const updated = matter.stringify(updatedContent, parsed.data);
     await writeFile(oneOnOnePath, updated, 'utf-8');
@@ -440,6 +454,7 @@ ${data.panelContent || ''}
 ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
 `;
     
+    frontmatter.synced_meetings = [data.id];
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(oneOnOnePath), { recursive: true });
     await writeFile(oneOnOnePath, markdown, 'utf-8');
@@ -459,9 +474,16 @@ async function handleRecurringMeeting(data: MeetingData, meetingName: string): P
   
   try {
     await access(recurringPath);
-    // File exists - append to it
+    // File exists - check if already synced
     const content = await readFile(recurringPath, 'utf-8');
     const parsed = matter(content);
+    
+    const syncedMeetings = parsed.data.synced_meetings || [];
+    if (syncedMeetings.includes(data.id)) {
+      return { success: false, action: `Already synced to ${meetingName}`, filePath: recurringPath };
+    }
+    
+    // Append to it
     
     // Create new section for this meeting
     const newSection = `## [[${dateStr}]]
@@ -470,6 +492,13 @@ async function handleRecurringMeeting(data: MeetingData, meetingName: string): P
 ${data.panelContent || ''}
 ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
 \n---\n`;
+    
+    // Track this synced meeting ID
+    const syncedMeetings = parsed.data.synced_meetings || [];
+    if (!syncedMeetings.includes(data.id)) {
+      syncedMeetings.push(data.id);
+    }
+    parsed.data.synced_meetings = syncedMeetings;
     
     const updatedContent = parsed.content + `\n${newSection}`;
     const updated = matter.stringify(updatedContent, parsed.data);
@@ -491,6 +520,7 @@ ${data.panelContent || ''}
 ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}
 `;
     
+    frontmatter.synced_meetings = [data.id];
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(recurringPath), { recursive: true });
     await writeFile(recurringPath, markdown, 'utf-8');
