@@ -121,9 +121,10 @@ export function processPanels(panels: Panel[]): string {
   result = result.replace(/\\\[ \\\]/g, '[ ]');  // \[ \] -> [ ]
   result = result.replace(/\\\[x\\\]/g, '[x]');  // \[x\] -> [x]
   
-  // Fix multiple spaces in list items (both regular and checkboxes)
-  result = result.replace(/^(-\s+)(\s{2,})/gm, '$1');  // Multiple spaces after dash
-  result = result.replace(/^(-\s+\[[x\s]\])(\s{2,})/gm, '$1 ');  // Multiple spaces after checkbox
+  // Fix multiple spaces in list items while preserving indentation
+  // Replace lines that start with dashes, allowing for indentation
+  result = result.replace(/^(\s*)-(\s{2,})(?=[^\s])/gm, '$1- ');  // Dashes with multiple spaces
+  result = result.replace(/^(\s*)-(\s{2,})(\[[x\s]\])/gm, '$1- $3 ');  // Dashes with spaces before checkbox
   
   return result;
 }
