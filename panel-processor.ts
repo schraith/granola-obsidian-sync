@@ -7,6 +7,31 @@ const turndownService = new TurndownService({
   codeBlockStyle: 'fenced'
 });
 
+// Add rule for checkboxes
+turndownService.addRule('checkbox', {
+  filter(node) {
+    return node.name === 'input' && node.attribs?.type === 'checkbox';
+  },
+  replacement() {
+    return '';
+  }
+});
+
+// Add rule for list items with checkboxes
+turndownService.addRule('checklistItem', {
+  filter(node) {
+    if (node.name !== 'li') return false;
+    const input = node.children?.find((child: any) => child.name === 'input' && child.attribs?.type === 'checkbox');
+    return !!input;
+  },
+  replacement(content, node) {
+    const input = node.children?.find((child: any) => child.name === 'input' && child.attribs?.type === 'checkbox') as any;
+    const checked = input?.attribs?.checked !== undefined ? '[x]' : '[ ]';
+    const text = content.replace(/<[^>]*>/g, '').trim();
+    return `- ${checked} ${text}\n`;
+  }
+});
+
 interface Panel {
   original_content: string;
   template_slug: string;
