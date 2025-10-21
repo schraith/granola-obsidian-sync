@@ -7,17 +7,7 @@ const turndownService = new TurndownService({
   codeBlockStyle: 'fenced'
 });
 
-// Add rule for checkboxes
-turndownService.addRule('checkbox', {
-  filter(node) {
-    return node.name === 'input' && node.attribs?.type === 'checkbox';
-  },
-  replacement() {
-    return '';
-  }
-});
-
-// Add rule for list items with checkboxes
+// Add rule for list items with checkboxes (must be before default li rule)
 turndownService.addRule('checklistItem', {
   filter(node) {
     if (node.name !== 'li') return false;
@@ -27,8 +17,22 @@ turndownService.addRule('checklistItem', {
   replacement(content, node) {
     const input = node.children?.find((child: any) => child.name === 'input' && child.attribs?.type === 'checkbox') as any;
     const checked = input?.attribs?.checked !== undefined ? '[x]' : '[ ]';
-    const text = content.replace(/<[^>]*>/g, '').trim();
+    // Remove the checkbox input from content and clean up
+    const text = content
+      .replace(/<input[^>]*type="checkbox"[^>]*>/gi, '')
+      .replace(/<[^>]*>/g, '')
+      .trim();
     return `- ${checked} ${text}\n`;
+  }
+});
+
+// Add rule for checkboxes to prevent them from being rendered as text
+turndownService.addRule('checkbox', {
+  filter(node) {
+    return node.name === 'input' && node.attribs?.type === 'checkbox';
+  },
+  replacement() {
+    return '';
   }
 });
 
