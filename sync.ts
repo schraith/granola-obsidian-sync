@@ -702,6 +702,12 @@ async function logToDaily(date: Date, action: string, targetName: string): Promi
     const content = await readFile(dailyNotePath, 'utf-8');
     const parsed = matter(content);
     
+    // Check if entry already exists (exact match with action and targetName)
+    if (parsed.content.includes(logEntry)) {
+      // Entry already exists, don't add duplicate
+      return;
+    }
+    
     // Check if "Synced Meetings" section exists
     if (parsed.content.includes('# Synced Meetings')) {
       // Append to existing section
