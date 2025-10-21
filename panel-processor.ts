@@ -99,5 +99,11 @@ export function processPanels(panels: Panel[]): string {
   });
 
   // Join with extra newlines for proper spacing between sections
-  return markdownSections.join('\n\n');
+  let result = markdownSections.join('\n\n');
+  
+  // Unescape checkbox brackets that may have been escaped
+  result = result.replace(/\\\[ \\\]/g, '[ ]');  // \[ \] -> [ ]
+  result = result.replace(/\\\[x\\\]/g, '[x]');  // \[x\] -> [x]
+  
+  return result;
 }
