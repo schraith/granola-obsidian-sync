@@ -7,6 +7,22 @@ const turndownService = new TurndownService({
   codeBlockStyle: 'fenced'
 });
 
+// Override default list item handling to use single space
+turndownService.addRule('listItem', {
+  filter: 'li',
+  replacement(content, node, options) {
+    content = content.replace(/^\s+/, '').replace(/\s+$/, '').replace(/\n/gm, '\n  ');
+    let prefix = options.bulletListMarker + ' ';
+    let parent = node.parentNode as any;
+    if (parent.name === 'ol') {
+      const start = parent.attribs?.start ? parseInt(parent.attribs.start) : 1;
+      const index = Array.from(parent.children || []).indexOf(node);
+      prefix = (start + index) + '. ';
+    }
+    return prefix + content + '\n';
+  }
+});
+
 // Add rule for list items with checkboxes (must be before default li rule)
 turndownService.addRule('checklistItem', {
   filter(node) {
@@ -104,6 +120,10 @@ export function processPanels(panels: Panel[]): string {
   // Unescape checkbox brackets that may have been escaped
   result = result.replace(/\\\[ \\\]/g, '[ ]');  // \[ \] -> [ ]
   result = result.replace(/\\\[x\\\]/g, '[x]');  // \[x\] -> [x]
+  
+  // Fix multiple spaces in list items (both regular and checkboxes)
+  result = result.replace(/^(-\s+)(\s{2,})/gm, '$1');  // Multiple spaces after dash
+  result = result.replace(/^(-\s+\[[x\s]\])(\s{2,})/gm, '$1 ');  // Multiple spaces after checkbox
   
   return result;
 }
