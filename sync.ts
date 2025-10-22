@@ -583,7 +583,8 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
   const markdown = matter.stringify(content, frontmatter);
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, markdown, 'utf-8');
-  await logToDaily(data.startTime, 'Created ad hoc', cleanTitle);
+  const displayName = `${pacificDateStr} - ${cleanTitle}`;
+  await logToDaily(data.startTime, 'Created ad hoc', displayName);
   
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
 }
