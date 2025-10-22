@@ -906,7 +906,8 @@ async function main(): Promise<void> {
       continue;
     }
     
-    // Fetch metadata and transcript
+    // Fetch metadata and transcript to check if processing is still ongoing
+    // We need this early to detect if transcript exists but summary hasn't been created yet
     const [metaResponse, transcriptResponse] = await Promise.all([
       fetchWithTimeout(`${API_BASE}/get-document-metadata`, {
         method: 'POST',
@@ -937,6 +938,13 @@ async function main(): Promise<void> {
 
     const metadata: DocMetadata = await metaResponse.json();
     const transcriptData = await transcriptResponse.json();
+    
+    // Check if transcript exists but no panels yet - meeting is still being processed
+    const hasTranscript = transcriptData && (Array.isArray(transcriptData) ? transcriptData.length > 0 : transcriptData.segments?.length > 0 || transcriptData.transcript?.segments?.length > 0);
+    if (hasTranscript && (!panels || panels.length === 0)) {
+      if (config.debug) console.log(`⏳ Transcript ready but summary not yet created: ${ensureTitle(meeting.title)}`);
+      continue;
+    }
     
     // Filter out solo/empty meetings
     const processedTranscript = processTranscript(transcriptData);
