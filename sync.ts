@@ -1,15 +1,27 @@
 #!/usr/bin/env bun
 
-import 'dotenv/config';
-import { readFile, writeFile, mkdir, access, readdir, stat } from 'fs/promises';
-import { existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import matter from 'gray-matter';
-import { processTranscript, shouldSkipPastMeeting } from './transcript-processor';
-import { processPanels } from './panel-processor';
+import "dotenv/config";
+import {
+  readFile,
+  writeFile,
+  mkdir,
+  access,
+  readdir,
+  stat,
+  appendFile,
+} from "fs/promises";
+import { existsSync } from "fs";
+import { join, dirname } from "path";
+import { homedir } from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import matter from "gray-matter";
+import {
+  processTranscript,
+  shouldSkipPastMeeting,
+} from "./transcript-processor";
+import { processPanels } from "./panel-processor";
+import { networkInterfaces } from "os";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,32 +29,35 @@ const execFileAsync = promisify(execFile);
 // All user-configurable values are sourced from environment variables.
 // See .env.example for details.
 
-const requiredEnvVars = [
-  'GRANOLA_AUTH_PATH',
-  'OBSIDIAN_VAULT_MEETINGS_PATH',
-];
+const requiredEnvVars = ["GRANOLA_AUTH_PATH", "OBSIDIAN_VAULT_MEETINGS_PATH"];
 
 // Helper to resolve tilde (~) in paths
-const resolvePath = (p: string) => (p.startsWith('~') ? join(homedir(), p.slice(1)) : p);
+const resolvePath = (p: string) =>
+  p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
 
 // Validate required environment variables
 for (const varName of requiredEnvVars) {
   if (!process.env[varName]) {
-    throw new Error(`Missing required environment variable: ${varName}. Please copy .env.example to .env and set this value.`);
+    throw new Error(
+      `Missing required environment variable: ${varName}. Please copy .env.example to .env and set this value.`,
+    );
   }
 }
 
 const config = {
   granolaAuthPath: resolvePath(process.env.GRANOLA_AUTH_PATH!),
   obsidianVaultPath: resolvePath(process.env.OBSIDIAN_VAULT_MEETINGS_PATH!),
-  meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || '50'),
-  syncTranscript: process.env.SYNC_TRANSCRIPT === 'true',
-  transcriptTitleFilter: process.env.TRANSCRIPT_TITLE_FILTER?.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) || [],
+  meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || "50"),
+  syncTranscript: process.env.SYNC_TRANSCRIPT === "true",
+  transcriptTitleFilter:
+    process.env.TRANSCRIPT_TITLE_FILTER?.split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean) || [],
   // Meeting processing config
-  enableMeetingProcessing: process.env.ENABLE_MEETING_PROCESSING === 'true',
+  enableMeetingProcessing: process.env.ENABLE_MEETING_PROCESSING === "true",
   vaultOpsScriptPath: process.env.VAULT_OPS_SCRIPT_PATH,
   // Debug logging
-  debug: process.env.DEBUG === 'true',
+  debug: process.env.DEBUG === "true",
   // Pushover config for future use
   pushover: {
     userKey: process.env.PUSHOVER_USER_KEY,
@@ -53,27 +68,132 @@ const config = {
 // Check external script exists if processing is enabled (log but don't fail)
 if (config.enableMeetingProcessing) {
   if (!config.vaultOpsScriptPath || !existsSync(config.vaultOpsScriptPath)) {
-    console.log(`⚠️  External script not found: ${config.vaultOpsScriptPath}. Meeting processing will be skipped.`);
+    console.log(
+      `⚠️  External script not found: ${config.vaultOpsScriptPath}. Meeting processing will be skipped.`,
+    );
   }
 }
 
 // --- END CONFIGURATION ---
 
-// Load meeting mappings
-let meetingMappings: { oneOnOne: Record<string, string>; recurring: Record<string, string> } = { oneOnOne: {}, recurring: {} };
-try {
-  const mappingsContent = await readFile(join(dirname(import.meta.path || ''), 'meeting-mappings.json'), 'utf-8');
-  meetingMappings = JSON.parse(mappingsContent);
-} catch (error) {
-  console.warn('⚠️  Could not load meeting-mappings.json, proceeding without meeting categorization');
+// LOGGING SETUP
+const getPSTDateString = (): string => {
+  const now = new Date();
+  return now.toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+};
+
+const logDir = join(homedir(), ".granola-sync-logs");
+const logFile = join(logDir, `sync-${getPSTDateString()}.log`);
+
+// Ensure log directory exists
+await mkdir(logDir, { recursive: true }).catch(() => {});
+
+async function log(message: string): Promise<void> {
+  const timestamp = new Date().toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const logMessage = `[${timestamp}] ${message}`;
+  console.log(message);
+  await appendFile(logFile, logMessage + "\n").catch(() => {});
 }
 
-const API_BASE = 'https://api.granola.ai/v1';
+async function logError(message: string): Promise<void> {
+  const timestamp = new Date().toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const logMessage = `[${timestamp}] ERROR: ${message}`;
+  console.error(message);
+  await appendFile(logFile, logMessage + "\n").catch(() => {});
+}
+
+// NETWORK CONNECTIVITY CHECK
+function hasNetworkConnection(): boolean {
+  const interfaces = networkInterfaces();
+  for (const [, addrs] of Object.entries(interfaces)) {
+    if (!addrs) continue;
+    for (const addr of addrs) {
+      if (
+        addr.family === "IPv4" &&
+        !addr.internal &&
+        addr.address !== "0.0.0.0"
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// FAILURE TRACKING
+const failureCountFile = join(logDir, ".granola-sync-failures");
+
+async function incrementFailureCount(): Promise<number> {
+  try {
+    const content = await readFile(failureCountFile, "utf-8");
+    const count = parseInt(content) || 0;
+    await writeFile(failureCountFile, String(count + 1), "utf-8");
+    return count + 1;
+  } catch {
+    await writeFile(failureCountFile, "1", "utf-8");
+    return 1;
+  }
+}
+
+async function resetFailureCount(): Promise<void> {
+  await writeFile(failureCountFile, "0", "utf-8").catch(() => {});
+}
+
+async function getFailureCount(): Promise<number> {
+  try {
+    const content = await readFile(failureCountFile, "utf-8");
+    return parseInt(content) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Load meeting mappings
+let meetingMappings: {
+  oneOnOne: Record<string, string>;
+  recurring: Record<string, string>;
+} = { oneOnOne: {}, recurring: {} };
+try {
+  const mappingsContent = await readFile(
+    join(dirname(import.meta.path || ""), "meeting-mappings.json"),
+    "utf-8",
+  );
+  meetingMappings = JSON.parse(mappingsContent);
+} catch (error) {
+  console.warn(
+    "⚠️  Could not load meeting-mappings.json, proceeding without meeting categorization",
+  );
+}
+
+const API_BASE = "https://api.granola.ai/v1";
 const VAULT_PATH = config.obsidianVaultPath;
 const TOKEN_PATH = config.granolaAuthPath;
 
 // Template identification for panel processing
-const TEMPLATE_SLUG = 'b491d27c-1106-4ebf-97c5-d5129742945c';
+const TEMPLATE_SLUG = "b491d27c-1106-4ebf-97c5-d5129742945c";
 
 // TYPES
 interface GranolaDoc {
@@ -88,7 +208,6 @@ interface DocMetadata {
   creator?: { name: string; email: string };
   sharing_link_visibility?: string;
 }
-
 
 interface Panel {
   id: string;
@@ -108,7 +227,7 @@ interface MeetingData {
   attendees: string[];
   organizer: string;
   location: string;
-  status: 'filed' | 'scheduled';
+  status: "filed" | "scheduled";
   transcript?: string;
   meetingUrl?: string;
   durationMin?: number;
@@ -120,7 +239,7 @@ interface ExistingMeeting {
   filePath: string;
   title: string;
   startTime: Date;
-  status: 'filed' | 'scheduled';
+  status: "filed" | "scheduled";
   id: string; // calendar_event_id from frontmatter
   isDeleted?: boolean; // true if found in trash
 }
@@ -128,19 +247,19 @@ interface ExistingMeeting {
 // TITLE NORMALIZATION FOR MATCHING
 function normalizeTitle(title: string): string {
   return title
-    .replace(/^Re:\s*/i, '') // Remove "Re:" prefix
+    .replace(/^Re:\s*/i, "") // Remove "Re:" prefix
     .toLowerCase()
     .trim();
 }
 
 // ENSURE TITLE IS NOT EMPTY
 function ensureTitle(title: string | undefined): string {
-  return (title?.trim() || '').length > 0 ? title!.trim() : 'No Title Found';
+  return (title?.trim() || "").length > 0 ? title!.trim() : "No Title Found";
 }
 
 // ESCAPE SPECIAL REGEX CHARACTERS IN REPLACEMENT STRINGS
 function escapeReplacement(str: string): string {
-  return str.replace(/\$/g, '$$$$');
+  return str.replace(/\$/g, "$$$$");
 }
 
 // CHECK IF TRANSCRIPT SHOULD BE SYNCED FOR THIS MEETING
@@ -149,10 +268,12 @@ function shouldSyncTranscript(title: string): boolean {
   if (config.transcriptTitleFilter.length === 0) {
     return config.syncTranscript;
   }
-  
+
   // Check if any filter matches the title (case-insensitive)
   const titleLower = title.toLowerCase();
-  return config.transcriptTitleFilter.some(filter => titleLower.includes(filter));
+  return config.transcriptTitleFilter.some((filter) =>
+    titleLower.includes(filter),
+  );
 }
 
 // TIME WINDOW MATCHING (12 hours)
@@ -164,49 +285,55 @@ function isWithinTimeWindow(time1: Date, time2: Date): boolean {
 
 // MEETING CATEGORIZATION
 interface MeetingCategory {
-  type: 'oneOnOne' | 'recurring' | 'adHoc';
+  type: "oneOnOne" | "recurring" | "adHoc";
   targetName?: string; // For 1:1 and recurring, the file to append to
 }
 
 function categorizeMeeting(title: string): MeetingCategory {
   const titleLower = title.toLowerCase();
-  
+
   // Check for explicit 1:1 indicators
-  const hasOneOnOneIndicator = /\b(1\s*<>\s*1|1:1|1-1|meeting\s+with)\b/i.test(title);
-  
+  const hasOneOnOneIndicator = /\b(1\s*<>\s*1|1:1|1-1|meeting\s+with)\b/i.test(
+    title,
+  );
+
   // Check for 1:1 matches (only if explicit indicator present)
   if (hasOneOnOneIndicator) {
     for (const [keyword, name] of Object.entries(meetingMappings.oneOnOne)) {
       if (titleLower.includes(keyword.toLowerCase())) {
-        return { type: 'oneOnOne', targetName: name };
+        return { type: "oneOnOne", targetName: name };
       }
     }
   }
-  
+
   // Check for recurring matches
   for (const [keyword, name] of Object.entries(meetingMappings.recurring)) {
     if (titleLower.includes(keyword.toLowerCase())) {
-      return { type: 'recurring', targetName: name };
+      return { type: "recurring", targetName: name };
     }
   }
-  
+
   // Default to ad hoc
-  return { type: 'adHoc' };
+  return { type: "adHoc" };
 }
 
 // VAULT INDEXING - SCAN EXISTING MEETING FILES (INCLUDING TRASHED)
-async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = true, debug: boolean = false): Promise<ExistingMeeting[]> {
+async function indexVaultMeetings(
+  vaultPath: string,
+  includeTrash: boolean = true,
+  debug: boolean = false,
+): Promise<ExistingMeeting[]> {
   const meetings: ExistingMeeting[] = [];
   const deletedIds = new Set<string>();
-  
+
   // First, check .trash folder for deleted meetings if it exists
   if (includeTrash) {
     // The vault root for "Tronic Ideaverse" is at:
     // /Users/kevinschraith/Obsidian/Tronic Ideaverse
     // So we need to go up from the meetings path to find it
-    const vaultRoot = '/Users/kevinschraith/Obsidian/Tronic Ideaverse';
-    const trashPath = join(vaultRoot, '.trash');
-    
+    const vaultRoot = "/Users/kevinschraith/Obsidian/Tronic Ideaverse";
+    const trashPath = join(vaultRoot, ".trash");
+
     try {
       await access(trashPath);
       // Recursively scan trash for markdown files with Granola IDs
@@ -216,22 +343,27 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
           const fullPath = join(dir, entry.name);
           if (entry.isDirectory()) {
             await scanTrash(fullPath);
-          } else if (entry.name.endsWith('.md')) {
+          } else if (entry.name.endsWith(".md")) {
             try {
-              const content = await readFile(fullPath, 'utf-8');
+              const content = await readFile(fullPath, "utf-8");
               const parsed = matter(content);
-              if (parsed.data.source === 'granola' && parsed.data.calendar_event_id) {
+              if (
+                parsed.data.source === "granola" &&
+                parsed.data.calendar_event_id
+              ) {
                 deletedIds.add(parsed.data.calendar_event_id);
-                const meetingTitle = ensureTitle(parsed.data.title || entry.name);
+                const meetingTitle = ensureTitle(
+                  parsed.data.title || entry.name,
+                );
                 if (debug) console.log(`   Found in trash: ${meetingTitle}`);
                 // Add to meetings array with isDeleted flag
                 meetings.push({
                   filePath: fullPath,
                   title: meetingTitle,
-                  startTime: new Date(parsed.data.start_time || ''),
-                  status: parsed.data.status || 'filed',
+                  startTime: new Date(parsed.data.start_time || ""),
+                  status: parsed.data.status || "filed",
                   id: parsed.data.calendar_event_id,
-                  isDeleted: true
+                  isDeleted: true,
                 });
               }
             } catch {
@@ -245,7 +377,7 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
       // .trash doesn't exist or isn't accessible, that's fine
     }
   }
-  
+
   try {
     // Check if vault path exists first
     try {
@@ -255,31 +387,34 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
       console.log(`⚠️  Vault path does not exist: ${vaultPath}`);
       return meetings;
     }
-    
+
     // Recursively scan vault directory for markdown files
     const scanDirectory = async (dir: string): Promise<void> => {
       const entries = await readdir(dir, { withFileTypes: true });
-      
+
       for (const entry of entries) {
         const fullPath = join(dir, entry.name);
-        
+
         if (entry.isDirectory()) {
           // Recursively scan subdirectories
           await scanDirectory(fullPath);
-        } else if (entry.name.endsWith('.md')) {
+        } else if (entry.name.endsWith(".md")) {
           try {
-            const content = await readFile(fullPath, 'utf-8');
+            const content = await readFile(fullPath, "utf-8");
             const parsed = matter(content);
             const frontmatter = parsed.data;
-            
-            if (frontmatter.source === 'granola' && frontmatter.calendar_event_id) {
+
+            if (
+              frontmatter.source === "granola" &&
+              frontmatter.calendar_event_id
+            ) {
               meetings.push({
                 filePath: fullPath,
                 title: ensureTitle(frontmatter.title),
-                startTime: new Date(frontmatter.start_time || ''),
-                status: frontmatter.status || 'scheduled',
+                startTime: new Date(frontmatter.start_time || ""),
+                status: frontmatter.status || "scheduled",
                 id: frontmatter.calendar_event_id,
-                isDeleted: deletedIds.has(frontmatter.calendar_event_id)
+                isDeleted: deletedIds.has(frontmatter.calendar_event_id),
               } as any);
             }
           } catch (error) {
@@ -289,52 +424,54 @@ async function indexVaultMeetings(vaultPath: string, includeTrash: boolean = tru
         }
       }
     };
-    
+
     await scanDirectory(vaultPath);
   } catch (error) {
-    console.error('Error indexing vault:', error);
+    console.error("Error indexing vault:", error);
   }
-  
+
   return meetings;
 }
 
 // FIND MATCHING SCHEDULED MEETING
 function findMatchingScheduledMeeting(
-  filedMeeting: { title: string; startTime: Date }, 
-  existingMeetings: ExistingMeeting[]
+  filedMeeting: { title: string; startTime: Date },
+  existingMeetings: ExistingMeeting[],
 ): ExistingMeeting | null {
   const normalizedTitle = normalizeTitle(filedMeeting.title);
-  
+
   for (const existing of existingMeetings) {
-    if (existing.status !== 'scheduled') continue;
-    
+    if (existing.status !== "scheduled") continue;
+
     const existingNormalizedTitle = normalizeTitle(existing.title);
-    
-    if (existingNormalizedTitle === normalizedTitle && 
-        isWithinTimeWindow(filedMeeting.startTime, existing.startTime)) {
+
+    if (
+      existingNormalizedTitle === normalizedTitle &&
+      isWithinTimeWindow(filedMeeting.startTime, existing.startTime)
+    ) {
       return existing;
     }
   }
-  
+
   return null;
 }
 
 // PUSHOVER NOTIFICATION - FIRE AND FORGET
 function sendPushover(title: string, message: string): void {
   if (!config.pushover.userKey || !config.pushover.apiToken) return;
-  
-  fetchWithTimeout('https://api.pushover.net/1/messages.json', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+
+  fetchWithTimeout("https://api.pushover.net/1/messages.json", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       token: config.pushover.apiToken,
       user: config.pushover.userKey,
       title,
       message,
-      priority: '1'
+      priority: "1",
     }),
-    timeout: 10000
-  }).catch(err => {
+    timeout: 10000,
+  }).catch((err) => {
     console.error(`Pushover failed: ${err.message}`);
   });
 }
@@ -342,20 +479,20 @@ function sendPushover(title: string, message: string): void {
 // MEETING PROCESSING FUNCTION
 async function processSingleMeeting(): Promise<void> {
   if (!config.enableMeetingProcessing) return;
-  
+
   if (!config.vaultOpsScriptPath || !existsSync(config.vaultOpsScriptPath)) {
     console.log(`⚠️  External script not found, skipping meeting processing`);
     return;
   }
-  
+
   console.log(`🤖 Calling external processing script...`);
-  
+
   try {
     // Fire and forget - don't wait for completion
-    const { spawn } = await import('child_process');
-    spawn('/opt/homebrew/bin/bash', [config.vaultOpsScriptPath], {
+    const { spawn } = await import("child_process");
+    spawn("/opt/homebrew/bin/bash", [config.vaultOpsScriptPath], {
       detached: true,
-      stdio: 'ignore'
+      stdio: "ignore",
     }).unref();
     console.log(`✅ External script launched (fire and forget)`);
   } catch (error: any) {
@@ -364,21 +501,23 @@ async function processSingleMeeting(): Promise<void> {
   }
 }
 
-
 // CONTENT VALIDATION FUNCTION
 function hasContent(transcriptData: any, panels?: Panel[]): boolean {
   // Check transcript segments
-  const segments = Array.isArray(transcriptData) ? transcriptData :
-                  transcriptData?.segments || 
-                  transcriptData?.transcript?.segments || 
-                  [];
-  
+  const segments = Array.isArray(transcriptData)
+    ? transcriptData
+    : transcriptData?.segments || transcriptData?.transcript?.segments || [];
+
   const hasTranscriptContent = segments.length > 0;
-  
+
   // Check panels
-  const hasPanelContent = panels && panels.length > 0 && 
-    panels.some(p => p.original_content && p.original_content.trim().length > 0);
-  
+  const hasPanelContent =
+    panels &&
+    panels.length > 0 &&
+    panels.some(
+      (p) => p.original_content && p.original_content.trim().length > 0,
+    );
+
   return hasTranscriptContent || hasPanelContent || false;
 }
 
@@ -389,59 +528,77 @@ function isPastMeeting(meeting: GranolaDoc): boolean {
 }
 
 // NORMALIZE ATTENDEE DATA FOR CONSISTENT FORMATTING
-function normalizeAttendee(attendee: { name?: string; email?: string }): string {
+function normalizeAttendee(attendee: {
+  name?: string;
+  email?: string;
+}): string {
   const hasValidName = attendee.name && attendee.name !== "undefined";
-  return hasValidName ? `${attendee.name} <${attendee.email}>` : attendee.email || '';
+  return hasValidName
+    ? `${attendee.name} <${attendee.email}>`
+    : attendee.email || "";
 }
 
 // CREATE OR APPEND TO 1:1 MEETING FILE
-async function handleOneOnOneMeeting(data: MeetingData, personName: string): Promise<{ success: boolean; action: string; filePath?: string }> {
+async function handleOneOnOneMeeting(
+  data: MeetingData,
+  personName: string,
+): Promise<{ success: boolean; action: string; filePath?: string }> {
   const oneOnOneFilename = `1 <> 1 ${personName}.md`;
-  const oneOnOnePath = join(VAULT_PATH, '1 <> 1', oneOnOneFilename);
-  
-  const dateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-  
+  const oneOnOnePath = join(VAULT_PATH, "1 <> 1", oneOnOneFilename);
+
+  const dateStr = data.startTime.toLocaleDateString("en-CA", {
+    timeZone: "America/Los_Angeles",
+  });
+
   try {
     await access(oneOnOnePath);
     // File exists - check if already synced
-    const content = await readFile(oneOnOnePath, 'utf-8');
+    const content = await readFile(oneOnOnePath, "utf-8");
     const parsed = matter(content);
-    
+
     const syncedMeetings = parsed.data.synced_meetings || [];
     if (syncedMeetings.includes(data.id)) {
-      return { success: false, action: `Already synced to 1 <> 1 ${personName}`, filePath: oneOnOnePath };
+      return {
+        success: false,
+        action: `Already synced to 1 <> 1 ${personName}`,
+        filePath: oneOnOnePath,
+      };
     }
-    
+
     // Append to it
-    
+
     // Create new section for this meeting
     const newSection = `## [[${dateStr}]]
 
-${data.panelContent || ''}
+${data.panelContent || ""}
 \n---\n`;
-    
+
     // Insert after the button (find button and insert after it)
     const updatedContent = parsed.content.replace(
       /(\`\`\`meta-bind-button[\s\S]*?\`\`\`)\n/,
-      `$1\n${escapeReplacement(newSection)}`
+      `$1\n${escapeReplacement(newSection)}`,
     );
-    
+
     // Track this synced meeting ID
     if (!syncedMeetings.includes(data.id)) {
       syncedMeetings.push(data.id);
     }
     parsed.data.synced_meetings = syncedMeetings;
-    
+
     const updated = matter.stringify(updatedContent, parsed.data);
-    await writeFile(oneOnOnePath, updated, 'utf-8');
-    await logToDaily(data.startTime, 'Appended to', `1 <> 1 ${personName}`);
-    return { success: true, action: `Appended to [[1 <> 1 ${personName}]]`, filePath: oneOnOnePath };
+    await writeFile(oneOnOnePath, updated, "utf-8");
+    await logToDaily(data.startTime, "Appended to", `1 <> 1 ${personName}`);
+    return {
+      success: true,
+      action: `Appended to [[1 <> 1 ${personName}]]`,
+      filePath: oneOnOnePath,
+    };
   } catch (error) {
     // File doesn't exist - create it
     const frontmatter = {
-      collection: ['[[1 <> 1]]']
+      collection: ["[[1 <> 1]]"],
     };
-    
+
     const newContent = `# [[${personName}]]
 
 \`\`\`meta-bind-button
@@ -449,71 +606,88 @@ style: primary
 label: Add Meeting Notes
 id: meeting
 action:
-  type: "replaceSelf" 
-  replacement: x/Templates/1 <> 1 Recurring Section Template 
+  type: "replaceSelf"
+  replacement: x/Templates/1 <> 1 Recurring Section Template
   templater: true
 \`\`\`
 ## [[${dateStr}]]
 
-${data.panelContent || ''}
+${data.panelContent || ""}
 `;
-    
+
     frontmatter.synced_meetings = [data.id];
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(oneOnOnePath), { recursive: true });
-    await writeFile(oneOnOnePath, markdown, 'utf-8');
-    await logToDaily(data.startTime, 'Created', `1 <> 1 ${personName}`);
-    return { success: true, action: `Created new 1 <> 1 ${personName}`, filePath: oneOnOnePath };
+    await writeFile(oneOnOnePath, markdown, "utf-8");
+    await logToDaily(data.startTime, "Created", `1 <> 1 ${personName}`);
+    return {
+      success: true,
+      action: `Created new 1 <> 1 ${personName}`,
+      filePath: oneOnOnePath,
+    };
   }
 }
 
 // CREATE OR APPEND TO RECURRING MEETING FILE
-async function handleRecurringMeeting(data: MeetingData, meetingName: string): Promise<{ success: boolean; action: string; filePath?: string }> {
+async function handleRecurringMeeting(
+  data: MeetingData,
+  meetingName: string,
+): Promise<{ success: boolean; action: string; filePath?: string }> {
   const recurringFilename = `${meetingName}.md`;
-  const recurringPath = join(VAULT_PATH, 'Recurring', recurringFilename);
-  
-  const dateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-  
+  const recurringPath = join(VAULT_PATH, "Recurring", recurringFilename);
+
+  const dateStr = data.startTime.toLocaleDateString("en-CA", {
+    timeZone: "America/Los_Angeles",
+  });
+
   try {
     await access(recurringPath);
     // File exists - check if already synced
-    const content = await readFile(recurringPath, 'utf-8');
+    const content = await readFile(recurringPath, "utf-8");
     const parsed = matter(content);
-    
+
     const syncedMeetings = parsed.data.synced_meetings || [];
     if (syncedMeetings.includes(data.id)) {
-      return { success: false, action: `Already synced to ${meetingName}`, filePath: recurringPath };
+      return {
+        success: false,
+        action: `Already synced to ${meetingName}`,
+        filePath: recurringPath,
+      };
     }
-    
+
     // Create new section for this meeting
     const newSection = `# ${dateStr}
 
-${data.panelContent || ''}
+${data.panelContent || ""}
 
 ---\n`;
-    
+
     // Insert after the button (find button and insert after it)
     const updatedContent = parsed.content.replace(
       /(\`\`\`meta-bind-button[\s\S]*?\`\`\`)\n/,
-      `$1\n${escapeReplacement(newSection)}`
+      `$1\n${escapeReplacement(newSection)}`,
     );
-    
+
     // Track this synced meeting ID
     if (!syncedMeetings.includes(data.id)) {
       syncedMeetings.push(data.id);
     }
     parsed.data.synced_meetings = syncedMeetings;
-    
+
     const updated = matter.stringify(updatedContent, parsed.data);
-    await writeFile(recurringPath, updated, 'utf-8');
-    await logToDaily(data.startTime, 'Appended to', meetingName);
-    return { success: true, action: `Appended to [[${meetingName}]]`, filePath: recurringPath };
+    await writeFile(recurringPath, updated, "utf-8");
+    await logToDaily(data.startTime, "Appended to", meetingName);
+    return {
+      success: true,
+      action: `Appended to [[${meetingName}]]`,
+      filePath: recurringPath,
+    };
   } catch (error) {
     // File doesn't exist - create it
     const frontmatter = {
-      collection: ['[[Meetings]]']
+      collection: ["[[Meetings]]"],
     };
-    
+
     const newContent = `# ${meetingName}
 
 \`\`\`meta-bind-button
@@ -521,116 +695,157 @@ style: primary
 label: Add Meeting Notes
 id: meeting
 action:
-  type: "replaceSelf" 
-  replacement: x/Templates/1 <> 1 Recurring Section Template 
+  type: "replaceSelf"
+  replacement: x/Templates/1 <> 1 Recurring Section Template
   templater: true
 \`\`\`
 # ${dateStr}
 
-${data.panelContent || ''}
+${data.panelContent || ""}
 `;
-    
+
     frontmatter.synced_meetings = [data.id];
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(recurringPath), { recursive: true });
-    await writeFile(recurringPath, markdown, 'utf-8');
-    await logToDaily(data.startTime, 'Created recurring', meetingName);
-    return { success: true, action: `Created new recurring: ${meetingName}`, filePath: recurringPath };
+    await writeFile(recurringPath, markdown, "utf-8");
+    await logToDaily(data.startTime, "Created recurring", meetingName);
+    return {
+      success: true,
+      action: `Created new recurring: ${meetingName}`,
+      filePath: recurringPath,
+    };
   }
 }
 
 // CREATE AD HOC MEETING FILE
-async function handleAdHocMeeting(data: MeetingData): Promise<{ success: boolean; action: string; filePath?: string }> {
-  const pacificDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-  
+async function handleAdHocMeeting(
+  data: MeetingData,
+): Promise<{ success: boolean; action: string; filePath?: string }> {
+  const pacificDateStr = data.startTime.toLocaleDateString("en-CA", {
+    timeZone: "America/Los_Angeles",
+  });
+
   const cleanTitle = data.title
-    .replace(/\//g, '･')
-    .replace(/\\/g, '･')
-    .replace(/:/g, '：')
-    .replace(/\*/g, '✱')
-    .replace(/\?/g, '？')
-    .replace(/"/g, '\'')  
-    .replace(/</g, '‹')
-    .replace(/>/g, '›')
-    .replace(/\|/g, '｜')
-    .replace(/\s+/g, ' ')
+    .replace(/\//g, "･")
+    .replace(/\\/g, "･")
+    .replace(/:/g, "：")
+    .replace(/\*/g, "✱")
+    .replace(/\?/g, "？")
+    .replace(/"/g, "'")
+    .replace(/</g, "‹")
+    .replace(/>/g, "›")
+    .replace(/\|/g, "｜")
+    .replace(/\s+/g, " ")
     .trim();
-  
+
   const filename = `${pacificDateStr} - ${cleanTitle}.md`;
   const filePath = join(VAULT_PATH, filename);
-  
+
   // Extract attendee names
-  const attendeeNames = data.attendees.map(a => a.split(' <')[0]);
-  
+  const attendeeNames = data.attendees.map((a) => a.split(" <")[0]);
+
   const frontmatter = {
-    collection: ['[[Meetings]]'],
-    type: 'meeting',
-    date: data.startTime.toISOString().split('T')[0],
+    collection: ["[[Meetings]]"],
+    type: "meeting",
+    date: data.startTime.toISOString().split("T")[0],
     start_time: data.startTime.toISOString(),
-    end_time: data.endTime?.toISOString() || '',
+    end_time: data.endTime?.toISOString() || "",
     attendees: attendeeNames,
-    source: 'granola',
-    calendar_event_id: data.id
+    source: "granola",
+    calendar_event_id: data.id,
   };
-  
+
   const content = `# ${data.title}
 
 ## Summary
 
-${data.panelContent || ''}
-${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ''}`;
-  
+${data.panelContent || ""}
+${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data.transcript}` : ""}`;
+
   const markdown = matter.stringify(content, frontmatter);
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, markdown, 'utf-8');
+  await writeFile(filePath, markdown, "utf-8");
   const displayName = `${pacificDateStr} - ${cleanTitle}`;
-  await logToDaily(data.startTime, 'Created ad hoc', displayName);
-  
+  await logToDaily(data.startTime, "Created ad hoc", displayName);
+
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
 }
 
-// SHARED FUNCTION TO PROCESS AND WRITE MEETINGS (LEGACY - for scheduled meetings)  
-async function processAndWriteMeeting(data: MeetingData, existingMeeting?: ExistingMeeting): Promise<{ success: boolean; filePath?: string }> {
+// SHARED FUNCTION TO PROCESS AND WRITE MEETINGS (LEGACY - for scheduled meetings)
+async function processAndWriteMeeting(
+  data: MeetingData,
+  existingMeeting?: ExistingMeeting,
+): Promise<{ success: boolean; filePath?: string }> {
   // Convert to Pacific timezone for folder structure (use direct toLocaleDateString with timezone)
-  const year = parseInt(data.startTime.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/Los_Angeles' }));
-  const month = String(parseInt(data.startTime.toLocaleDateString('en-US', { month: 'numeric', timeZone: 'America/Los_Angeles' }))).padStart(2, '0');
-  const monthName = data.startTime.toLocaleDateString('en-US', { month: 'long', timeZone: 'America/Los_Angeles' });
-  const day = String(parseInt(data.startTime.toLocaleDateString('en-US', { day: 'numeric', timeZone: 'America/Los_Angeles' }))).padStart(2, '0');
-  const dayName = data.startTime.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/Los_Angeles' });
-  
-  // For filename timestamp, use Pacific timezone as well
-  const pacificDateStr = data.startTime.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-  const pacificTimeStr = data.startTime.toLocaleTimeString('en-US', { 
-    hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' 
+  const year = parseInt(
+    data.startTime.toLocaleDateString("en-US", {
+      year: "numeric",
+      timeZone: "America/Los_Angeles",
+    }),
+  );
+  const month = String(
+    parseInt(
+      data.startTime.toLocaleDateString("en-US", {
+        month: "numeric",
+        timeZone: "America/Los_Angeles",
+      }),
+    ),
+  ).padStart(2, "0");
+  const monthName = data.startTime.toLocaleDateString("en-US", {
+    month: "long",
+    timeZone: "America/Los_Angeles",
   });
-  
+  const day = String(
+    parseInt(
+      data.startTime.toLocaleDateString("en-US", {
+        day: "numeric",
+        timeZone: "America/Los_Angeles",
+      }),
+    ),
+  ).padStart(2, "0");
+  const dayName = data.startTime.toLocaleDateString("en-US", {
+    weekday: "short",
+    timeZone: "America/Los_Angeles",
+  });
+
+  // For filename timestamp, use Pacific timezone as well
+  const pacificDateStr = data.startTime.toLocaleDateString("en-CA", {
+    timeZone: "America/Los_Angeles",
+  });
+  const pacificTimeStr = data.startTime.toLocaleTimeString("en-US", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Los_Angeles",
+  });
+
   // Format time as "14h30" instead of "14:30" or "1430"
-  const timeFormatted = pacificTimeStr.replace(':', 'h');
+  const timeFormatted = pacificTimeStr.replace(":", "h");
   const dateTimeStr = `${pacificDateStr} ${timeFormatted}`;
 
   // Use existing file path if updating, otherwise create new path
   let filePath: string;
-  
+
   if (existingMeeting) {
     // Update existing scheduled meeting file
     filePath = existingMeeting.filePath;
   } else {
     // Create new file path with smart character replacements
     const cleanTitle = data.title
-      .replace(/\//g, '･')      // Replace / with middle dot
-      .replace(/\\/g, '･')     // Replace \ with middle dot
-      .replace(/:/g, '：')       // Replace : with full-width colon
-      .replace(/\*/g, '✱')      // Replace * with asterisk operator
-      .replace(/\?/g, '？')      // Replace ? with full-width question mark
-      .replace(/"/g, '\'')      // Replace " with single quote
-      .replace(/</g, '‹')        // Replace < with single left angle quote
-      .replace(/>/g, '›')        // Replace > with single right angle quote
-      .replace(/\|/g, '｜')      // Replace | with full-width vertical bar
-      .replace(/\s+/g, ' ')     // Normalize spaces
+      .replace(/\//g, "･") // Replace / with middle dot
+      .replace(/\\/g, "･") // Replace \ with middle dot
+      .replace(/:/g, "：") // Replace : with full-width colon
+      .replace(/\*/g, "✱") // Replace * with asterisk operator
+      .replace(/\?/g, "？") // Replace ? with full-width question mark
+      .replace(/"/g, "'") // Replace " with single quote
+      .replace(/</g, "‹") // Replace < with single left angle quote
+      .replace(/>/g, "›") // Replace > with single right angle quote
+      .replace(/\|/g, "｜") // Replace | with full-width vertical bar
+      .replace(/\s+/g, " ") // Normalize spaces
       .trim();
-    
+
     const filename = `${dateTimeStr} ${cleanTitle}.md`;
-    filePath = join(VAULT_PATH, 'Ad-hoc', filename);
+    filePath = join(VAULT_PATH, "Ad-hoc", filename);
 
     // Skip if file exists
     try {
@@ -644,134 +859,168 @@ async function processAndWriteMeeting(data: MeetingData, existingMeeting?: Exist
   // Create frontmatter
   const frontmatter = {
     title: data.title,
-    date: data.startTime.toISOString().split('T')[0],
+    date: data.startTime.toISOString().split("T")[0],
     attendees: data.attendees,
     organizer: data.organizer,
     location: data.location,
     start_time: data.startTime.toISOString(),
-    end_time: data.endTime?.toISOString() || '',
+    end_time: data.endTime?.toISOString() || "",
     duration_min: data.durationMin || 0,
-    area: '',
-    source: 'granola',
+    area: "",
+    source: "granola",
     status: data.status,
-    privacy: 'internal',
+    privacy: "internal",
     calendar_event_id: data.id,
-    meeting_url: data.meetingUrl || '',
-    transcript_url: data.status === 'filed' ? `https://notes.granola.ai/d/${data.id}` : ''
+    meeting_url: data.meetingUrl || "",
+    transcript_url:
+      data.status === "filed" ? `https://notes.granola.ai/d/${data.id}` : "",
   };
 
   // Create content based on status
-  const content = data.status === 'filed'
-    ? `# ${data.title}
+  const content =
+    data.status === "filed"
+      ? `# ${data.title}
 
 ## Summary
 
-${data.panelContent || ''}${shouldSyncTranscript(data.title) && data.transcript ? `
+${data.panelContent || ""}${
+          shouldSyncTranscript(data.title) && data.transcript
+            ? `
 
 ## Transcript
-${data.transcript}` : ''}`
-    : `# ${data.title}
+${data.transcript}`
+            : ""
+        }`
+      : `# ${data.title}
 
 ## Notes
 
 ## Action Items
 `;
-  
+
   const markdown = matter.stringify(content, frontmatter);
-  
+
   // Write file
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, markdown, 'utf-8');
-  
-  console.log(data.status === 'filed' ? `✓ ${data.title}` : `📅 ${data.title} (${dateTimeStr})`);
+  await writeFile(filePath, markdown, "utf-8");
+
+  console.log(
+    data.status === "filed"
+      ? `✓ ${data.title}`
+      : `📅 ${data.title} (${dateTimeStr})`,
+  );
   return { success: true, filePath };
 }
 
 // DAILY NOTE LOGGING
-async function logToDaily(date: Date, action: string, targetName: string): Promise<void> {
-  const vaultRoot = '/Users/kevinschraith/Obsidian/Tronic Ideaverse';
-  const daysPath = join(vaultRoot, 'Calendar', 'Days');
-  
-  const dateStr = date.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+async function logToDaily(
+  date: Date,
+  action: string,
+  targetName: string,
+): Promise<void> {
+  const vaultRoot = "/Users/kevinschraith/Obsidian/Tronic Ideaverse";
+  const daysPath = join(vaultRoot, "Calendar", "Days");
+
+  const dateStr = date.toLocaleDateString("en-CA", {
+    timeZone: "America/Los_Angeles",
+  });
   const dailyNotePath = join(daysPath, `${dateStr}.md`);
-  
+
   // Create "Synced Meetings" section entry
   const logEntry = `- ${action} [[${targetName}]]`;
-  
+
   try {
     // Try to read existing daily note
-    const content = await readFile(dailyNotePath, 'utf-8');
+    const content = await readFile(dailyNotePath, "utf-8");
     const parsed = matter(content);
-    
+
     // Check if entry already exists (exact match with action and targetName)
     if (parsed.content.includes(logEntry)) {
       // Entry already exists, don't add duplicate
       return;
     }
-    
+
     // Check if "Synced Meetings" section exists
-    if (parsed.content.includes('# Synced Meetings')) {
+    if (parsed.content.includes("# Synced Meetings")) {
       // Append to existing section
       const updated = parsed.content.replace(
         /(# Synced Meetings\n)/,
-        `$1${escapeReplacement(logEntry)}\n`
+        `$1${escapeReplacement(logEntry)}\n`,
       );
       const markdown = matter.stringify(updated, parsed.data);
-      await writeFile(dailyNotePath, markdown, 'utf-8');
+      await writeFile(dailyNotePath, markdown, "utf-8");
     } else {
       // Add new section
       const synced = `\n# Synced Meetings\n${logEntry}\n`;
       const updated = parsed.content + synced;
       const markdown = matter.stringify(updated, parsed.data);
-      await writeFile(dailyNotePath, markdown, 'utf-8');
+      await writeFile(dailyNotePath, markdown, "utf-8");
     }
   } catch (error) {
     // Daily note doesn't exist - create it using template
     try {
-      const templatePath = join(vaultRoot, 'x', 'Templates', 'Periodic Notes - Daily Template.md');
-      const templateContent = await readFile(templatePath, 'utf-8');
+      const templatePath = join(
+        vaultRoot,
+        "x",
+        "Templates",
+        "Periodic Notes - Daily Template.md",
+      );
+      const templateContent = await readFile(templatePath, "utf-8");
       const parsed = matter(templateContent);
-      
+
       // Create new daily note with date substitution
       const newFrontmatter = { ...parsed.data, created: dateStr };
       let newContent = parsed.content;
-      
+
       // Add Synced Meetings section before Freewrite
       newContent = newContent.replace(
         /(# Freewrite)/,
-        `# Synced Meetings\n${escapeReplacement(logEntry)}\n\n$1`
+        `# Synced Meetings\n${escapeReplacement(logEntry)}\n\n$1`,
       );
-      
+
       const markdown = matter.stringify(newContent, newFrontmatter);
       await mkdir(dirname(dailyNotePath), { recursive: true });
-      await writeFile(dailyNotePath, markdown, 'utf-8');
+      await writeFile(dailyNotePath, markdown, "utf-8");
     } catch (templateError) {
-      console.warn(`Could not create daily note for ${dateStr}:`, templateError);
+      console.warn(
+        `Could not create daily note for ${dateStr}:`,
+        templateError,
+      );
     }
   }
 }
 
 // FETCH WITH TIMEOUT
-function fetchWithTimeout(url: string, options: RequestInit & { timeout?: number } = {}): Promise<Response> {
+function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeout?: number } = {},
+  label?: string,
+): Promise<Response> {
   const timeout = options.timeout || 30000; // Default 30 seconds
   const controller = new AbortController();
+  if (config.debug && label) console.log(`  → Calling ${label}...`);
   const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
-  return fetch(url, { ...options, signal: controller.signal })
-    .finally(() => clearTimeout(timeoutId));
+
+  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+    clearTimeout(timeoutId),
+  );
 }
 
 // PANEL API FUNCTION
 async function getPanels(documentId: string, token: string): Promise<Panel[]> {
-  const response = await fetchWithTimeout(`${API_BASE}/get-document-panels`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
+  const response = await fetchWithTimeout(
+    `${API_BASE}/get-document-panels`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ document_id: documentId }),
+      timeout: 30000,
     },
-    body: JSON.stringify({ document_id: documentId }),
-    timeout: 30000
-  });
+    "get-document-panels",
+  );
 
   if (!response.ok) {
     throw new Error(`Failed to fetch panels: ${response.status}`);
@@ -782,22 +1031,34 @@ async function getPanels(documentId: string, token: string): Promise<Panel[]> {
 
 // MAIN SYNC FUNCTION
 async function main(): Promise<void> {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] Starting sync with future meetings...`);
+  if (!hasNetworkConnection()) {
+    await log("⚠️  No network connection detected - skipping sync");
+    process.exit(0);
+  }
+
+  await log("Starting sync with future meetings...");
 
   // 1. INDEX EXISTING VAULT MEETINGS
-  console.log('\n📁 Indexing existing vault meetings...');
-  const existingMeetings = await indexVaultMeetings(VAULT_PATH, true, config.debug);
+  console.log("\n📁 Indexing existing vault meetings...");
+  const existingMeetings = await indexVaultMeetings(
+    VAULT_PATH,
+    true,
+    config.debug,
+  );
   console.log(`   Found ${existingMeetings.length} existing meetings`);
 
   // 2. GET AUTH TOKEN
+  console.log("\n🔑 Loading auth token...");
   let token: string | undefined;
-  const tokenData = JSON.parse(await readFile(TOKEN_PATH, 'utf-8'));
+  const tokenData = JSON.parse(await readFile(TOKEN_PATH, "utf-8"));
 
   // Try to get token from access_token field
   if (tokenData.access_token) {
     token = tokenData.access_token;
-  } else if (typeof tokenData.cognito_tokens === 'string' && tokenData.cognito_tokens.length > 0) {
+  } else if (
+    typeof tokenData.cognito_tokens === "string" &&
+    tokenData.cognito_tokens.length > 0
+  ) {
     // Try parsing cognito_tokens as JSON
     try {
       const cognitoTokens = JSON.parse(tokenData.cognito_tokens);
@@ -808,7 +1069,10 @@ async function main(): Promise<void> {
       // If parsing cognito_tokens as JSON fails, assume it's the token itself
       token = tokenData.cognito_tokens;
     }
-  } else if (typeof tokenData.workos_tokens === 'string' && tokenData.workos_tokens.length > 0) {
+  } else if (
+    typeof tokenData.workos_tokens === "string" &&
+    tokenData.workos_tokens.length > 0
+  ) {
     try {
       const workosTokens = JSON.parse(tokenData.workos_tokens);
       if (workosTokens.access_token) {
@@ -819,25 +1083,29 @@ async function main(): Promise<void> {
       token = tokenData.workos_tokens;
     }
   }
-  
-  if (!token) throw new Error('No auth token found');
+
+  if (!token) throw new Error("No auth token found");
 
   // 3. FETCH PAST/PROCESSED MEETINGS FROM API
-  console.log('\n📥 Fetching processed meetings from API...');
-  const docsResponse = await fetchWithTimeout(`${API_BASE}/get-documents`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
+  console.log("\n📥 Fetching processed meetings from API...");
+  const docsResponse = await fetchWithTimeout(
+    `${API_BASE}/get-documents`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ limit: config.meetingsLimit }),
+      timeout: 30000,
     },
-    body: JSON.stringify({ limit: config.meetingsLimit }),
-    timeout: 30000
-  });
+    "get-documents",
+  );
 
   if (!docsResponse.ok) {
     const error = `Docs API failed: ${docsResponse.status} ${docsResponse.statusText}`;
-    sendPushover('Granola Sync FAILED', error);
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for Pushover
+    sendPushover("Granola Sync FAILED", error);
+    await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for Pushover
     throw new Error(error);
   }
 
@@ -846,9 +1114,9 @@ async function main(): Promise<void> {
 
   // API should ALWAYS return past meetings
   if (meetings.length === 0) {
-    const error = 'API returned 0 meetings - API is likely broken';
-    sendPushover('Granola Sync FAILED', error);
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for Pushover
+    const error = "API returned 0 meetings - API is likely broken";
+    sendPushover("Granola Sync FAILED", error);
+    await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for Pushover
     throw new Error(error);
   }
 
@@ -857,194 +1125,269 @@ async function main(): Promise<void> {
   const newlyProcessedMeetings: { filePath: string; data: MeetingData }[] = [];
 
   // 4. PROCESS PAST MEETINGS (FILED MEETINGS WITH DEDUPLICATION)
-  console.log('\n📝 Processing past meetings...');
+  console.log("\n📝 Processing past meetings...");
   for (const meeting of meetings) {
     // Check if meeting was deleted (in trash)
-    const existingMeeting = existingMeetings.find(em => em.id === meeting.id);
-    
+    const existingMeeting = existingMeetings.find((em) => em.id === meeting.id);
+
     if (existingMeeting?.isDeleted) {
-      if (config.debug) console.log(`🗑️  Skipping deleted: ${ensureTitle(meeting.title)}`);
+      if (config.debug)
+        console.log(`🗑️  Skipping deleted: ${ensureTitle(meeting.title)}`);
       continue;
     }
-    
+
     // CATEGORIZE MEETING FIRST (before duplicate check) - so we know what type it should be
     const category = categorizeMeeting(ensureTitle(meeting.title));
-    
+
     // Check if we already have a filed meeting with this Granola ID (any status)
-    const existingFiledMeeting = existingMeetings.find(em => 
-      em.id === meeting.id && !em.isDeleted
+    const existingFiledMeeting = existingMeetings.find(
+      (em) => em.id === meeting.id && !em.isDeleted,
     );
-    
+
     // For 1:1 and recurring meetings, allow reprocessing even if it exists as ad-hoc
     // This handles cases where a meeting was previously created as ad-hoc but should be in a 1:1 or recurring file
-    if (existingFiledMeeting && category.type === 'adHoc') {
+    if (existingFiledMeeting && category.type === "adHoc") {
       // Only skip ad-hoc meetings that already exist
       console.log(`⏭️  Already exists: ${ensureTitle(meeting.title)}`);
       continue;
     }
-    
+
     // Also skip if any meeting type already exists
-    if (existingFiledMeeting && existingFiledMeeting.id === meeting.id && category.type !== 'adHoc') {
-      if (config.debug) console.log(`Already synced: ${ensureTitle(meeting.title)}`);
+    if (
+      existingFiledMeeting &&
+      existingFiledMeeting.id === meeting.id &&
+      category.type !== "adHoc"
+    ) {
+      if (config.debug)
+        console.log(`Already synced: ${ensureTitle(meeting.title)}`);
       continue;
     }
-    
+
     // Note: 1:1 and recurring meetings will proceed even if they exist as ad-hoc,
     // and they'll be added to the correct 1:1/recurring file via handleOneOnOneMeeting/handleRecurringMeeting
-    
+
     // Check if meeting has panels (required for sync)
     let panels: Panel[] = [];
     try {
+      if (config.debug)
+        console.log(`    Fetching panels for: ${ensureTitle(meeting.title)}`);
       panels = await getPanels(meeting.id, token);
     } catch (error) {
-      console.log(`⚠️  Failed to fetch panels for ${ensureTitle(meeting.title)} - skipping`);
+      console.log(
+        `⚠️  Failed to fetch panels for ${ensureTitle(meeting.title)} - skipping`,
+      );
       continue;
     }
 
     if (!panels || panels.length === 0) {
-      if (config.debug) console.log(`⏳ No panels yet: ${ensureTitle(meeting.title)}`);
+      if (config.debug)
+        console.log(`⏳ No panels yet: ${ensureTitle(meeting.title)}`);
       continue;
     }
-    
+
     // Fetch metadata and transcript to check if processing is still ongoing
     // We need this early to detect if transcript exists but summary hasn't been created yet
+    if (config.debug)
+      console.log(
+        `    Fetching metadata & transcript for: ${ensureTitle(meeting.title)}`,
+      );
     const [metaResponse, transcriptResponse] = await Promise.all([
-      fetchWithTimeout(`${API_BASE}/get-document-metadata`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
+      fetchWithTimeout(
+        `${API_BASE}/get-document-metadata`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ document_id: meeting.id }),
+          timeout: 30000,
         },
-        body: JSON.stringify({ document_id: meeting.id }),
-        timeout: 30000
-      }),
-      fetchWithTimeout(`${API_BASE}/get-document-transcript`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
+        "get-document-metadata",
+      ),
+      fetchWithTimeout(
+        `${API_BASE}/get-document-transcript`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ document_id: meeting.id }),
+          timeout: 30000,
         },
-        body: JSON.stringify({ document_id: meeting.id }),
-        timeout: 30000
-      })
+        "get-document-transcript",
+      ),
     ]);
 
     if (!metaResponse.ok || !transcriptResponse.ok) {
       const error = `Failed to fetch data for ${ensureTitle(meeting.title)} - skipping`;
       console.error(error);
-      sendPushover('Granola Sync Warning', error);
+      sendPushover("Granola Sync Warning", error);
       continue;
     }
 
     const metadata: DocMetadata = await metaResponse.json();
     const transcriptData = await transcriptResponse.json();
-    
+
     // Check if transcript exists but no panels yet - meeting is still being processed
-    const hasTranscript = transcriptData && (Array.isArray(transcriptData) ? transcriptData.length > 0 : transcriptData.segments?.length > 0 || transcriptData.transcript?.segments?.length > 0);
+    const hasTranscript =
+      transcriptData &&
+      (Array.isArray(transcriptData)
+        ? transcriptData.length > 0
+        : transcriptData.segments?.length > 0 ||
+          transcriptData.transcript?.segments?.length > 0);
     if (hasTranscript && (!panels || panels.length === 0)) {
-      if (config.debug) console.log(`⏳ Transcript ready but summary not yet created: ${ensureTitle(meeting.title)}`);
+      if (config.debug)
+        console.log(
+          `⏳ Transcript ready but summary not yet created: ${ensureTitle(meeting.title)}`,
+        );
       continue;
     }
-    
+
     // Filter out solo/empty meetings
     const processedTranscript = processTranscript(transcriptData);
     const skipCheck = shouldSkipPastMeeting({
       attendees: metadata.attendees || [],
       transcript: processedTranscript,
-      title: ensureTitle(meeting.title)
+      title: ensureTitle(meeting.title),
     });
-    
+
     if (skipCheck.skip) {
-      console.log(`⏭️  Skipping past meeting: ${ensureTitle(meeting.title)} (${skipCheck.reason})`);
+      console.log(
+        `⏭️  Skipping past meeting: ${ensureTitle(meeting.title)} (${skipCheck.reason})`,
+      );
       skippedCount++;
       continue;
     }
-    
+
     // Only do full transcript processing if we're syncing transcripts for this meeting
-    const finalTranscript = shouldSyncTranscript(ensureTitle(meeting.title)) ? processedTranscript : '';
-    
+    const finalTranscript = shouldSyncTranscript(ensureTitle(meeting.title))
+      ? processedTranscript
+      : "";
+
     // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
     if (isPastMeeting(meeting)) {
       if (!hasContent(transcriptData, panels)) {
-        console.log(`⏭️  Skipping empty: ${ensureTitle(meeting.title)} (0 segments, ${panels.length} panels)`);
+        console.log(
+          `⏭️  Skipping empty: ${ensureTitle(meeting.title)} (0 segments, ${panels.length} panels)`,
+        );
         skippedCount++;
         continue;
       }
     }
-    
+
     // Panel processing using already fetched panels
-    let panelContent = '';
+    let panelContent = "";
     try {
       if (panels && panels.length > 0) {
         // Sort panels: specified template first
-        const sortedPanels = panels.sort((a, b) => 
-          (b.template_slug === TEMPLATE_SLUG ? 1 : 0) - 
-          (a.template_slug === TEMPLATE_SLUG ? 1 : 0)
+        const sortedPanels = panels.sort(
+          (a, b) =>
+            (b.template_slug === TEMPLATE_SLUG ? 1 : 0) -
+            (a.template_slug === TEMPLATE_SLUG ? 1 : 0),
         );
         panelContent = processPanels(sortedPanels);
       }
     } catch (error) {
-      console.error(`Failed to process panels for "${ensureTitle(meeting.title)}":`, error);
+      console.error(
+        `Failed to process panels for "${ensureTitle(meeting.title)}":`,
+        error,
+      );
       // Continue without panels - don't break existing functionality
     }
-    
+
     // Normalize data for shared function
     const meetingData: MeetingData = {
       id: meeting.id,
       title: ensureTitle(meeting.title),
       startTime: new Date(meeting.created_at),
-      attendees: metadata.attendees?.map(normalizeAttendee).filter(Boolean) || [],
-      organizer: metadata.creator?.name || '',
-      location: '',
-      status: 'filed',
+      attendees:
+        metadata.attendees?.map(normalizeAttendee).filter(Boolean) || [],
+      organizer: metadata.creator?.name || "",
+      location: "",
+      status: "filed",
       transcript: finalTranscript,
-      panelContent: panelContent
+      panelContent: panelContent,
     };
-    
+
     // category was already determined earlier
     let result: { success: boolean; action?: string; filePath?: string };
-    
-    if (category.type === 'oneOnOne' && category.targetName) {
+
+    if (category.type === "oneOnOne" && category.targetName) {
       result = await handleOneOnOneMeeting(meetingData, category.targetName);
-    } else if (category.type === 'recurring' && category.targetName) {
+    } else if (category.type === "recurring" && category.targetName) {
       result = await handleRecurringMeeting(meetingData, category.targetName);
     } else {
       // Ad hoc meeting
       result = await handleAdHocMeeting(meetingData);
     }
-    
+
     if (result.success && result.filePath) {
       processedCount++;
       console.log(`${result.action}`);
-      newlyProcessedMeetings.push({ filePath: result.filePath, data: meetingData });
+      newlyProcessedMeetings.push({
+        filePath: result.filePath,
+        data: meetingData,
+      });
     }
   }
 
   // 5. PROCESS NEWLY SYNCED MEETINGS
   if (config.enableMeetingProcessing && newlyProcessedMeetings.length > 0) {
-    console.log(`\n🤖 Processing ${newlyProcessedMeetings.length} newly synced meetings...`);
+    console.log(
+      `\n🤖 Processing ${newlyProcessedMeetings.length} newly synced meetings...`,
+    );
     await processSingleMeeting();
   }
 
   // 6. SUCCESS MESSAGE
-  const endTimestamp = new Date().toISOString();
-  console.log(`\n[${endTimestamp}] SUCCESS: ${processedCount} meetings processed`);
+  await log(`\nSUCCESS: ${processedCount} meetings processed`);
   if (skippedCount > 0) {
-    console.log(`⏭️  Skipped: ${skippedCount} empty meetings (no transcript or panels)`);
+    await log(
+      `⏭️  Skipped: ${skippedCount} empty meetings (no transcript or panels)`,
+    );
   }
+
+  // Reset failure count on success
+  await resetFailureCount();
 }
 
 // EXECUTION
-main().catch(error => {
-  const errorTimestamp = new Date().toISOString();
-  console.error(`[${errorTimestamp}] === SYNC FAILED ===`);
-  console.error(error);
-  console.error('===================');
-  
-  // Send Pushover with stack trace
-  const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
-  sendPushover('Granola Sync CRASHED', `Script crashed at ${errorTimestamp}\n\n${errorMessage}`);
-  
+main().catch(async (error) => {
+  // Check network first - don't report errors if offline
+  if (!hasNetworkConnection()) {
+    await logError("Sync failed due to no network connection");
+    process.exit(1);
+  }
+
+  // Increment failure count
+  const failureCount = await incrementFailureCount();
+
+  // Format error message
+  let errorMessage = "";
+  if (error instanceof Error) {
+    const code = (error as any).code ? ` [code: ${(error as any).code}]` : "";
+    errorMessage = `${error.name}: ${error.message}${code}`;
+  } else if (typeof error === "object" && error !== null) {
+    const name = (error as any).name || "Error";
+    const message = (error as any).message || "Unknown error";
+    const code = (error as any).code ? ` [code: ${(error as any).code}]` : "";
+    errorMessage = `${name}: ${message}${code}`;
+  } else {
+    errorMessage = String(error);
+  }
+
+  await logError(`SYNC FAILED (attempt ${failureCount}): ${errorMessage}`);
+
+  // Only send Pushover notification after 3 consecutive failures
+  if (failureCount >= 3) {
+    sendPushover(
+      "Granola Sync CRASHED (3x failures)",
+      `Sync has failed 3 times in a row.\n\nLatest error: ${errorMessage}`,
+    );
+  }
+
   // Give Pushover time to send before exiting
   setTimeout(() => process.exit(1), 1000);
 });
