@@ -15,6 +15,7 @@ import { join, dirname } from "path";
 import { homedir } from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { fileURLToPath } from "url";
 import matter from "gray-matter";
 import {
   processTranscript,
@@ -178,8 +179,9 @@ let meetingMappings: {
   recurring: Record<string, string>;
 } = { oneOnOne: {}, recurring: {} };
 try {
+  const currentDir = dirname(fileURLToPath(import.meta.url));
   const mappingsContent = await readFile(
-    join(dirname(import.meta.path || ""), "meeting-mappings.json"),
+    join(currentDir, "meeting-mappings.json"),
     "utf-8",
   );
   meetingMappings = JSON.parse(mappingsContent);
@@ -660,7 +662,7 @@ ${data.panelContent || ""}
     };
   } catch (error) {
     // File doesn't exist - create it
-    const frontmatter = {
+    const frontmatter: { collections: string[]; synced_meetings?: string[] } = {
       collections: ["[[1 <> 1]]", "[[Meetings]]"],
     };
 
@@ -750,7 +752,7 @@ ${data.panelContent || ""}
     };
   } catch (error) {
     // File doesn't exist - create it
-    const frontmatter = {
+    const frontmatter: { collections: string[]; synced_meetings?: string[] } = {
       collections: ["[[Recurring]]", "[[Meetings]]"],
     };
 
