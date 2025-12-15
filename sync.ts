@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile);
 // All user-configurable values are sourced from environment variables.
 // See .env.example for details.
 
-const requiredEnvVars = ["GRANOLA_AUTH_PATH", "OBSIDIAN_VAULT_MEETINGS_PATH"];
+const requiredEnvVars = ["GRANOLA_AUTH_PATH", "OBSIDIAN_VAULT_ROOT_PATH", "OBSIDIAN_VAULT_MEETINGS_PATH"];
 
 // Helper to resolve tilde (~) in paths
 const resolvePath = (p: string) =>
@@ -46,7 +46,8 @@ for (const varName of requiredEnvVars) {
 
 const config = {
   granolaAuthPath: resolvePath(process.env.GRANOLA_AUTH_PATH!),
-  obsidianVaultPath: resolvePath(process.env.OBSIDIAN_VAULT_MEETINGS_PATH!),
+  obsidianVaultRoot: resolvePath(process.env.OBSIDIAN_VAULT_ROOT_PATH!),
+  obsidianVaultMeetingsPath: process.env.OBSIDIAN_VAULT_MEETINGS_PATH!,
   meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || "50"),
   syncTranscript: process.env.SYNC_TRANSCRIPT === "true",
   transcriptTitleFilter:
@@ -189,8 +190,17 @@ try {
 }
 
 const API_BASE = "https://api.granola.ai/v1";
-const VAULT_PATH = config.obsidianVaultPath;
+const VAULT_ROOT = config.obsidianVaultRoot;
+const VAULT_PATH = join(config.obsidianVaultRoot, config.obsidianVaultMeetingsPath);
 const TOKEN_PATH = config.granolaAuthPath;
+
+// Owner emails - used to identify "me" when inferring 1:1 partner from attendees
+const OWNER_EMAILS = new Set(
+  (process.env.OWNER_EMAILS || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+);
 
 // CLI / ENV OVERRIDES
 // Allow forcing a re-sync of a single Granola document by ID
@@ -301,13 +311,23 @@ interface MeetingCategory {
   targetName?: string; // For 1:1 and recurring, the file to append to
 }
 
+function isOneOnOneTitle(title: string): boolean {
+  // Match various 1:1 formats including full-width colon (：)
+  return /\b(1\s*<>\s*1|1[:：]1|1-1|meeting\s+with)\b/i.test(title);
+}
+
+// Some 1:1s are also organized into a dedicated Granola folder/workspace
+// named "1 <> 1". Treat that as an additional 1:1 signal.
+function isOneOnOneByFolder(meeting: GranolaDoc): boolean {
+  const workspaceName = meeting.workspace?.name || "";
+  return /1\s*<>\s*1/i.test(workspaceName);
+}
+
 function categorizeMeeting(title: string): MeetingCategory {
   const titleLower = title.toLowerCase();
 
   // Check for explicit 1:1 indicators
-  const hasOneOnOneIndicator = /\b(1\s*<>\s*1|1:1|1-1|meeting\s+with)\b/i.test(
-    title,
-  );
+  const hasOneOnOneIndicator = isOneOnOneTitle(title);
 
   // Check for 1:1 matches (only if explicit indicator present)
   if (hasOneOnOneIndicator) {
@@ -327,6 +347,42 @@ function categorizeMeeting(title: string): MeetingCategory {
 
   // Default to ad hoc
   return { type: "adHoc" };
+}
+
+// Attempt to infer 1:1 partner from meeting metadata when title-based
+// matching is ambiguous or has no unique mapping.
+function categorizeOneOnOneFromMetadata(metadata: DocMetadata): MeetingCategory | null {
+  const attendees = metadata.attendees || [];
+  if (attendees.length === 0) return null;
+
+  // Start with all attendees
+  let candidates = attendees.slice();
+
+  // Filter out known owner emails if configured
+  if (OWNER_EMAILS.size > 0) {
+    candidates = candidates.filter(
+      (a) => !a.email || !OWNER_EMAILS.has(a.email.toLowerCase()),
+    );
+  }
+
+  // Also filter out the meeting creator if present in attendees
+  if (metadata.creator && metadata.creator.email) {
+    const creatorEmail = metadata.creator.email.toLowerCase();
+    candidates = candidates.filter(
+      (a) => !a.email || a.email.toLowerCase() !== creatorEmail,
+    );
+  }
+
+  // For a true 1:1 we expect exactly one non-owner attendee
+  if (candidates.length !== 1) return null;
+
+  const candidate = candidates[0];
+  const displayName = (candidate.name && candidate.name.trim()) ||
+    (candidate.email ? candidate.email.split("@")[0] : "");
+
+  if (!displayName) return null;
+
+  return { type: "oneOnOne", targetName: displayName.trim() };
 }
 
 // VAULT INDEXING - SCAN EXISTING MEETING FILES (INCLUDING TRASHED)
@@ -787,7 +843,7 @@ async function logToDaily(
   action: string,
   targetName: string,
 ): Promise<void> {
-  const daysPath = join(VAULT_PATH, "Calendar", "Days");
+  const daysPath = join(VAULT_ROOT, "Calendar", "Days");
 
   const dateStr = date.toLocaleDateString("en-CA", {
     timeZone: "America/Los_Angeles",
@@ -828,7 +884,7 @@ async function logToDaily(
     // Daily note doesn't exist - create it using template
     try {
       const templatePath = join(
-        VAULT_PATH,
+        VAULT_ROOT,
         "x",
         "Templates",
         "Periodic Notes - Daily Template.md",
@@ -840,10 +896,10 @@ async function logToDaily(
       const newFrontmatter = { ...parsed.data, created: dateStr };
       let newContent = parsed.content;
 
-      // Add Synced Meetings section before Freewrite
+      // Add Synced Meetings section before Quick Capture
       newContent = newContent.replace(
-        /(# Freewrite)/,
-        `# Synced Meetings\n${escapeReplacement(logEntry)}\n\n$1`,
+        /(## Quick Capture)/,
+        `## Synced Meetings\n${escapeReplacement(logEntry)}\n\n$1`,
       );
 
       const markdown = matter.stringify(newContent, newFrontmatter);
@@ -1148,6 +1204,32 @@ async function main(): Promise<void> {
       ? processedTranscript
       : "";
 
+    // Fallback: if title indicates a 1:1 but we didn't get a unique
+    // mapping from meeting-mappings.json, try to infer the partner
+    // from attendee metadata (non-owner attendee).
+    let effectiveCategory = category;
+    const isLikelyOneOnOne =
+      isOneOnOneTitle(ensureTitle(meeting.title)) || isOneOnOneByFolder(meeting);
+
+    if (
+      category.type === "adHoc" &&
+      isLikelyOneOnOne &&
+      metadata.attendees &&
+      metadata.attendees.length > 0
+    ) {
+      const attendeeCategory = categorizeOneOnOneFromMetadata(metadata);
+      if (attendeeCategory) {
+        effectiveCategory = attendeeCategory;
+        if (config.debug) {
+          console.log(
+            `🔁 Reclassified as 1:1 based on attendees: ${
+              attendeeCategory.targetName
+            } (${ensureTitle(meeting.title)})`,
+          );
+        }
+      }
+    }
+
     // CONTENT VALIDATION FOR PAST MEETINGS - Skip empty meetings
     if (isPastMeeting(meeting)) {
       if (!hasContent(transcriptData, panels)) {
@@ -1193,13 +1275,21 @@ async function main(): Promise<void> {
       panelContent: panelContent,
     };
 
-    // category was already determined earlier
+    // category was determined earlier and may have been refined using metadata
     let result: { success: boolean; action?: string; filePath?: string };
 
-    if (category.type === "oneOnOne" && category.targetName) {
-      result = await handleOneOnOneMeeting(meetingData, category.targetName, isForceMode);
-    } else if (category.type === "recurring" && category.targetName) {
-      result = await handleRecurringMeeting(meetingData, category.targetName, isForceMode);
+    if (effectiveCategory.type === "oneOnOne" && effectiveCategory.targetName) {
+      result = await handleOneOnOneMeeting(
+        meetingData,
+        effectiveCategory.targetName,
+        isForceMode,
+      );
+    } else if (effectiveCategory.type === "recurring" && effectiveCategory.targetName) {
+      result = await handleRecurringMeeting(
+        meetingData,
+        effectiveCategory.targetName,
+        isForceMode,
+      );
     } else {
       // Ad hoc meeting
       result = await handleAdHocMeeting(meetingData);
