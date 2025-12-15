@@ -192,6 +192,18 @@ const API_BASE = "https://api.granola.ai/v1";
 const VAULT_PATH = config.obsidianVaultPath;
 const TOKEN_PATH = config.granolaAuthPath;
 
+// CLI / ENV OVERRIDES
+// Allow forcing a re-sync of a single Granola document by ID
+const argv = process.argv.slice(2);
+let forceDocumentId: string | undefined = process.env.FORCE_GRANOLA_ID;
+
+const forceFlagIndex = argv.indexOf("--force");
+if (!forceDocumentId && forceFlagIndex !== -1 && argv[forceFlagIndex + 1]) {
+  forceDocumentId = argv[forceFlagIndex + 1];
+}
+
+const isForceMode = !!forceDocumentId;
+
 // Template identification for panel processing
 const TEMPLATE_SLUG = "b491d27c-1106-4ebf-97c5-d5129742945c";
 
@@ -328,11 +340,7 @@ async function indexVaultMeetings(
 
   // First, check .trash folder for deleted meetings if it exists
   if (includeTrash) {
-    // The vault root for "Tronic Ideaverse" is at:
-    // /Users/kevinschraith/Obsidian/Tronic Ideaverse
-    // So we need to go up from the meetings path to find it
-    const vaultRoot = "/Users/kevinschraith/Obsidian/Tronic Ideaverse";
-    const trashPath = join(vaultRoot, ".trash");
+    const trashPath = join(VAULT_PATH, ".trash");
 
     try {
       await access(trashPath);
@@ -542,6 +550,7 @@ function normalizeAttendee(attendee: {
 async function handleOneOnOneMeeting(
   data: MeetingData,
   personName: string,
+  force: boolean = false,
 ): Promise<{ success: boolean; action: string; filePath?: string }> {
   const oneOnOneFilename = `1 <> 1 ${personName}.md`;
   const oneOnOnePath = join(VAULT_PATH, "1 <> 1", oneOnOneFilename);
@@ -557,7 +566,7 @@ async function handleOneOnOneMeeting(
     const parsed = matter(content);
 
     const syncedMeetings = parsed.data.synced_meetings || [];
-    if (syncedMeetings.includes(data.id)) {
+    if (syncedMeetings.includes(data.id) && !force) {
       return {
         success: false,
         action: `Already synced to 1 <> 1 ${personName}`,
@@ -596,7 +605,7 @@ ${data.panelContent || ""}
   } catch (error) {
     // File doesn't exist - create it
     const frontmatter = {
-      collection: ["[[1 <> 1]]"],
+      collections: ["[[1 <> 1]]", "[[Meetings]]"],
     };
 
     const newContent = `# [[${personName}]]
@@ -632,6 +641,7 @@ ${data.panelContent || ""}
 async function handleRecurringMeeting(
   data: MeetingData,
   meetingName: string,
+  force: boolean = false,
 ): Promise<{ success: boolean; action: string; filePath?: string }> {
   const recurringFilename = `${meetingName}.md`;
   const recurringPath = join(VAULT_PATH, "Recurring", recurringFilename);
@@ -647,7 +657,7 @@ async function handleRecurringMeeting(
     const parsed = matter(content);
 
     const syncedMeetings = parsed.data.synced_meetings || [];
-    if (syncedMeetings.includes(data.id)) {
+    if (syncedMeetings.includes(data.id) && !force) {
       return {
         success: false,
         action: `Already synced to ${meetingName}`,
@@ -685,7 +695,7 @@ ${data.panelContent || ""}
   } catch (error) {
     // File doesn't exist - create it
     const frontmatter = {
-      collection: ["[[Meetings]]"],
+      collections: ["[[Recurring]]", "[[Meetings]]"],
     };
 
     const newContent = `# ${meetingName}
@@ -739,20 +749,20 @@ async function handleAdHocMeeting(
     .trim();
 
   const filename = `${pacificDateStr} - ${cleanTitle}.md`;
-  const filePath = join(VAULT_PATH, filename);
+  const filePath = join(VAULT_PATH, "Ad-hoc", filename);
 
   // Extract attendee names
   const attendeeNames = data.attendees.map((a) => a.split(" <")[0]);
 
   const frontmatter = {
-    collection: ["[[Meetings]]"],
+    collections: ["[[Ad-hoc]]", "[[Meetings]]"],
     type: "meeting",
-    date: data.startTime.toISOString().split("T")[0],
+    created: data.startTime.toISOString().split("T")[0],
     start_time: data.startTime.toISOString(),
     end_time: data.endTime?.toISOString() || "",
     attendees: attendeeNames,
     source: "granola",
-    calendar_event_id: data.id,
+    calendar_event_id: data.id
   };
 
   const content = `# ${data.title}
@@ -771,155 +781,13 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
 }
 
-// SHARED FUNCTION TO PROCESS AND WRITE MEETINGS (LEGACY - for scheduled meetings)
-async function processAndWriteMeeting(
-  data: MeetingData,
-  existingMeeting?: ExistingMeeting,
-): Promise<{ success: boolean; filePath?: string }> {
-  // Convert to Pacific timezone for folder structure (use direct toLocaleDateString with timezone)
-  const year = parseInt(
-    data.startTime.toLocaleDateString("en-US", {
-      year: "numeric",
-      timeZone: "America/Los_Angeles",
-    }),
-  );
-  const month = String(
-    parseInt(
-      data.startTime.toLocaleDateString("en-US", {
-        month: "numeric",
-        timeZone: "America/Los_Angeles",
-      }),
-    ),
-  ).padStart(2, "0");
-  const monthName = data.startTime.toLocaleDateString("en-US", {
-    month: "long",
-    timeZone: "America/Los_Angeles",
-  });
-  const day = String(
-    parseInt(
-      data.startTime.toLocaleDateString("en-US", {
-        day: "numeric",
-        timeZone: "America/Los_Angeles",
-      }),
-    ),
-  ).padStart(2, "0");
-  const dayName = data.startTime.toLocaleDateString("en-US", {
-    weekday: "short",
-    timeZone: "America/Los_Angeles",
-  });
-
-  // For filename timestamp, use Pacific timezone as well
-  const pacificDateStr = data.startTime.toLocaleDateString("en-CA", {
-    timeZone: "America/Los_Angeles",
-  });
-  const pacificTimeStr = data.startTime.toLocaleTimeString("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "America/Los_Angeles",
-  });
-
-  // Format time as "14h30" instead of "14:30" or "1430"
-  const timeFormatted = pacificTimeStr.replace(":", "h");
-  const dateTimeStr = `${pacificDateStr} ${timeFormatted}`;
-
-  // Use existing file path if updating, otherwise create new path
-  let filePath: string;
-
-  if (existingMeeting) {
-    // Update existing scheduled meeting file
-    filePath = existingMeeting.filePath;
-  } else {
-    // Create new file path with smart character replacements
-    const cleanTitle = data.title
-      .replace(/\//g, "･") // Replace / with middle dot
-      .replace(/\\/g, "･") // Replace \ with middle dot
-      .replace(/:/g, "：") // Replace : with full-width colon
-      .replace(/\*/g, "✱") // Replace * with asterisk operator
-      .replace(/\?/g, "？") // Replace ? with full-width question mark
-      .replace(/"/g, "'") // Replace " with single quote
-      .replace(/</g, "‹") // Replace < with single left angle quote
-      .replace(/>/g, "›") // Replace > with single right angle quote
-      .replace(/\|/g, "｜") // Replace | with full-width vertical bar
-      .replace(/\s+/g, " ") // Normalize spaces
-      .trim();
-
-    const filename = `${dateTimeStr} ${cleanTitle}.md`;
-    filePath = join(VAULT_PATH, "Ad-hoc", filename);
-
-    // Skip if file exists
-    try {
-      await access(filePath);
-      return { success: false };
-    } catch {
-      // File doesn't exist, continue
-    }
-  }
-
-  // Create frontmatter
-  const frontmatter = {
-    title: data.title,
-    date: data.startTime.toISOString().split("T")[0],
-    attendees: data.attendees,
-    organizer: data.organizer,
-    location: data.location,
-    start_time: data.startTime.toISOString(),
-    end_time: data.endTime?.toISOString() || "",
-    duration_min: data.durationMin || 0,
-    area: "",
-    source: "granola",
-    status: data.status,
-    privacy: "internal",
-    calendar_event_id: data.id,
-    meeting_url: data.meetingUrl || "",
-    transcript_url:
-      data.status === "filed" ? `https://notes.granola.ai/d/${data.id}` : "",
-  };
-
-  // Create content based on status
-  const content =
-    data.status === "filed"
-      ? `# ${data.title}
-
-## Summary
-
-${data.panelContent || ""}${
-          shouldSyncTranscript(data.title) && data.transcript
-            ? `
-
-## Transcript
-${data.transcript}`
-            : ""
-        }`
-      : `# ${data.title}
-
-## Notes
-
-## Action Items
-`;
-
-  const markdown = matter.stringify(content, frontmatter);
-
-  // Write file
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, markdown, "utf-8");
-
-  console.log(
-    data.status === "filed"
-      ? `✓ ${data.title}`
-      : `📅 ${data.title} (${dateTimeStr})`,
-  );
-  return { success: true, filePath };
-}
-
 // DAILY NOTE LOGGING
 async function logToDaily(
   date: Date,
   action: string,
   targetName: string,
 ): Promise<void> {
-  const vaultRoot = "/Users/kevinschraith/Obsidian/Tronic Ideaverse";
-  const daysPath = join(vaultRoot, "Calendar", "Days");
+  const daysPath = join(VAULT_PATH, "Calendar", "Days");
 
   const dateStr = date.toLocaleDateString("en-CA", {
     timeZone: "America/Los_Angeles",
@@ -960,7 +828,7 @@ async function logToDaily(
     // Daily note doesn't exist - create it using template
     try {
       const templatePath = join(
-        vaultRoot,
+        VAULT_PATH,
         "x",
         "Templates",
         "Periodic Notes - Daily Template.md",
@@ -1087,7 +955,7 @@ async function main(): Promise<void> {
   if (!token) throw new Error("No auth token found");
 
   // 3. FETCH PAST/PROCESSED MEETINGS FROM API
-  console.log("\n📥 Fetching processed meetings from API...");
+  console.log("\n📥 Fetching processed meetings from API..." + (isForceMode && forceDocumentId ? ` (force mode for ${forceDocumentId})` : ""));
   const docsResponse = await fetchWithTimeout(
     `${API_BASE}/get-documents`,
     {
@@ -1109,8 +977,18 @@ async function main(): Promise<void> {
     throw new Error(error);
   }
 
-  const meetings: GranolaDoc[] = await docsResponse.json();
-  console.log(`   Found ${meetings.length} processed meetings`);
+  const allMeetings: GranolaDoc[] = await docsResponse.json();
+  console.log(`   Found ${allMeetings.length} processed meetings`);
+
+  const meetings = isForceMode && forceDocumentId
+    ? allMeetings.filter((m) => m.id === forceDocumentId)
+    : allMeetings;
+
+  if (isForceMode && forceDocumentId && meetings.length === 0) {
+    const error = `No meetings found matching forced document id: ${forceDocumentId}`;
+    await logError(error);
+    return;
+  }
 
   // API should ALWAYS return past meetings
   if (meetings.length === 0) {
@@ -1144,23 +1022,25 @@ async function main(): Promise<void> {
       (em) => em.id === meeting.id && !em.isDeleted,
     );
 
-    // For 1:1 and recurring meetings, allow reprocessing even if it exists as ad-hoc
-    // This handles cases where a meeting was previously created as ad-hoc but should be in a 1:1 or recurring file
-    if (existingFiledMeeting && category.type === "adHoc") {
-      // Only skip ad-hoc meetings that already exist
-      console.log(`⏭️  Already exists: ${ensureTitle(meeting.title)}`);
-      continue;
-    }
+    if (!isForceMode) {
+      // For 1:1 and recurring meetings, allow reprocessing even if it exists as ad-hoc
+      // This handles cases where a meeting was previously created as ad-hoc but should be in a 1:1 or recurring file
+      if (existingFiledMeeting && category.type === "adHoc") {
+        // Only skip ad-hoc meetings that already exist
+        console.log(`⏭️  Already exists: ${ensureTitle(meeting.title)}`);
+        continue;
+      }
 
-    // Also skip if any meeting type already exists
-    if (
-      existingFiledMeeting &&
-      existingFiledMeeting.id === meeting.id &&
-      category.type !== "adHoc"
-    ) {
-      if (config.debug)
-        console.log(`Already synced: ${ensureTitle(meeting.title)}`);
-      continue;
+      // Also skip if any meeting type already exists
+      if (
+        existingFiledMeeting &&
+        existingFiledMeeting.id === meeting.id &&
+        category.type !== "adHoc"
+      ) {
+        if (config.debug)
+          console.log(`Already synced: ${ensureTitle(meeting.title)}`);
+        continue;
+      }
     }
 
     // Note: 1:1 and recurring meetings will proceed even if they exist as ad-hoc,
@@ -1185,8 +1065,25 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Fetch metadata and transcript to check if processing is still ongoing
-    // We need this early to detect if transcript exists but summary hasn't been created yet
+    // Ensure summarization has completed: require at least one non-empty panel
+    // Granola's API does not expose an explicit "done" flag; in practice, panels
+    // are only created once summarization has run. We therefore treat any
+    // non-empty panel as evidence the summary is ready.
+    const summaryPanelReady = panels.some(
+      (p) =>
+        typeof p.original_content === "string" &&
+        p.original_content.trim().length > 0,
+    );
+
+    if (!summaryPanelReady) {
+      if (config.debug)
+        console.log(
+          `⏳ Summary panel not ready yet: ${ensureTitle(meeting.title)}`,
+        );
+      continue;
+    }
+
+    // Fetch metadata and transcript (used for attendee info and transcript content)
     if (config.debug)
       console.log(
         `    Fetching metadata & transcript for: ${ensureTitle(meeting.title)}`,
@@ -1229,21 +1126,6 @@ async function main(): Promise<void> {
 
     const metadata: DocMetadata = await metaResponse.json();
     const transcriptData = await transcriptResponse.json();
-
-    // Check if transcript exists but no panels yet - meeting is still being processed
-    const hasTranscript =
-      transcriptData &&
-      (Array.isArray(transcriptData)
-        ? transcriptData.length > 0
-        : transcriptData.segments?.length > 0 ||
-          transcriptData.transcript?.segments?.length > 0);
-    if (hasTranscript && (!panels || panels.length === 0)) {
-      if (config.debug)
-        console.log(
-          `⏳ Transcript ready but summary not yet created: ${ensureTitle(meeting.title)}`,
-        );
-      continue;
-    }
 
     // Filter out solo/empty meetings
     const processedTranscript = processTranscript(transcriptData);
@@ -1315,9 +1197,9 @@ async function main(): Promise<void> {
     let result: { success: boolean; action?: string; filePath?: string };
 
     if (category.type === "oneOnOne" && category.targetName) {
-      result = await handleOneOnOneMeeting(meetingData, category.targetName);
+      result = await handleOneOnOneMeeting(meetingData, category.targetName, isForceMode);
     } else if (category.type === "recurring" && category.targetName) {
-      result = await handleRecurringMeeting(meetingData, category.targetName);
+      result = await handleRecurringMeeting(meetingData, category.targetName, isForceMode);
     } else {
       // Ad hoc meeting
       result = await handleAdHocMeeting(meetingData);
