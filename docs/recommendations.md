@@ -16,9 +16,9 @@
 - **Fix**: Update `hasContent` to accept non-empty string transcripts
 
 ### 4. Configurable timezone [added: 2025-08-25]
-- **Issue**: Hardcoded to 'America/New_York'
+- **Issue**: Hardcoded to 'America/Los_Angeles'
 - **Impact**: Tool unusable for users in other timezones
-- **Fix**: Add TIMEZONE env variable (default to America/New_York)
+- **Fix**: Add TIMEZONE env variable (default to America/Los_Angeles)
 
 ### 5. Remove hardcoded bash path [added: 2025-08-25]
 - **Issue**: Uses `/opt/homebrew/bin/bash` which is macOS-specific

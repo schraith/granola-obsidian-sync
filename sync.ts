@@ -812,12 +812,30 @@ async function handleAdHocMeeting(
   // Extract attendee names
   const attendeeNames = data.attendees.map((a) => a.split(" <")[0]);
 
+  // Format dates in local timezone (America/Los_Angeles)
+  const tz = { timeZone: "America/Los_Angeles" } as const;
+  const formatLocalDate = (date: Date) => {
+    const year = date.toLocaleString("en-US", { ...tz, year: "numeric" });
+    const month = date.toLocaleString("en-US", { ...tz, month: "2-digit" });
+    const day = date.toLocaleString("en-US", { ...tz, day: "2-digit" });
+    return `${year}-${month}-${day}`;
+  };
+  const formatLocalDateTime = (date: Date) => {
+    const year = date.toLocaleString("en-US", { ...tz, year: "numeric" });
+    const month = date.toLocaleString("en-US", { ...tz, month: "2-digit" });
+    const day = date.toLocaleString("en-US", { ...tz, day: "2-digit" });
+    const hour = date.toLocaleString("en-US", { ...tz, hour: "2-digit", hour12: false });
+    const minute = date.toLocaleString("en-US", { ...tz, minute: "2-digit" });
+    const second = date.toLocaleString("en-US", { ...tz, second: "2-digit" });
+    return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+  };
+
   const frontmatter = {
     collections: ["[[Ad-hoc]]", "[[Meetings]]"],
     type: "meeting",
-    created: data.startTime.toISOString().split("T")[0],
-    start_time: data.startTime.toISOString(),
-    end_time: data.endTime?.toISOString() || "",
+    created: formatLocalDate(data.startTime),
+    start_time: formatLocalDateTime(data.startTime),
+    end_time: data.endTime ? formatLocalDateTime(data.endTime) : "",
     attendees: attendeeNames,
     source: "granola",
     calendar_event_id: data.id

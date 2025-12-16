@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a simple tool for syncing Granola meeting notes to Obsidian. It fetches past meetings with transcripts from the Granola API and creates organized Markdown files in your Obsidian vault. The sync logic is split into two focused files: `sync.ts` for orchestration and `transcript-processor.ts` for transcript processing. Maintains zero abstractions, no retry logic, and fail-loud behavior.
 
-IMPORTANT! All file and meeting operations occur in 'America/New York' (Eastern US) time zone. ALWAYS use this time zone for date operations in this project - never use UTC for any user-visible information, files, folders, or metadata.
+IMPORTANT! All file and meeting operations occur in 'America/Los_Angeles' (Pacific US) time zone. ALWAYS use this time zone for date operations in this project - never use UTC for any user-visible information, files, folders, or metadata.
 
 ## Core Commands
 
