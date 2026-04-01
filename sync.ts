@@ -9,9 +9,10 @@ import {
   readdir,
   stat,
   appendFile,
+  rename,
 } from "fs/promises";
 import { existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename } from "path";
 import { homedir } from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -793,18 +794,7 @@ async function handleAdHocMeeting(
     timeZone: "America/Los_Angeles",
   });
 
-  const cleanTitle = data.title
-    .replace(/\//g, "･")
-    .replace(/\\/g, "･")
-    .replace(/:/g, "：")
-    .replace(/\*/g, "✱")
-    .replace(/\?/g, "？")
-    .replace(/"/g, "'")
-    .replace(/</g, "‹")
-    .replace(/>/g, "›")
-    .replace(/\|/g, "｜")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleanTitle = cleanTitleForFilename(data.title);
 
   const filename = `${pacificDateStr} - ${cleanTitle}.md`;
   const filePath = join(VAULT_PATH, "Ad-hoc", filename);
@@ -838,7 +828,8 @@ async function handleAdHocMeeting(
     end_time: data.endTime ? formatLocalDateTime(data.endTime) : "",
     attendees: attendeeNames,
     source: "granola",
-    calendar_event_id: data.id
+    calendar_event_id: data.id,
+    granola_title: data.title,
   };
 
   const content = `# ${data.title}
@@ -855,6 +846,90 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
   await logToDaily(data.startTime, "Created ad hoc", displayName);
 
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
+}
+
+// CLEAN TITLE FOR FILENAME (shared by ad-hoc creation and rename)
+function cleanTitleForFilename(title: string): string {
+  return title
+    .replace(/\//g, "･")
+    .replace(/\\/g, "･")
+    .replace(/:/g, "：")
+    .replace(/\*/g, "✱")
+    .replace(/\?/g, "？")
+    .replace(/"/g, "'")
+    .replace(/</g, "‹")
+    .replace(/>/g, "›")
+    .replace(/\|/g, "｜")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// RENAME EXISTING MEETING FILE IF TITLE CHANGED IN GRANOLA
+// Respects user renames in Obsidian: only renames if the filename still matches
+// the previously synced Granola title (stored in frontmatter as granola_title).
+async function renameIfTitleChanged(
+  existingFilePath: string,
+  newTitle: string,
+): Promise<{ renamed: boolean; newPath?: string }> {
+  const oldFilename = basename(existingFilePath, ".md");
+
+  // Ad-hoc filenames are: "YYYY-MM-DD - {cleanTitle}"
+  const dateMatch = oldFilename.match(/^(\d{4}-\d{2}-\d{2}) - /);
+  if (!dateMatch) {
+    return { renamed: false };
+  }
+
+  const datePrefix = dateMatch[1];
+  const content = await readFile(existingFilePath, "utf-8");
+  const parsed = matter(content);
+
+  const storedGranolaTitle = parsed.data.granola_title;
+
+  // If no stored title, this is a pre-migration file — store the current Granola
+  // title for future comparisons but don't rename (we can't tell who changed it)
+  if (!storedGranolaTitle) {
+    parsed.data.granola_title = newTitle;
+    const updated = matter.stringify(parsed.content, parsed.data);
+    await writeFile(existingFilePath, updated, "utf-8");
+    return { renamed: false };
+  }
+
+  // Granola title hasn't changed — nothing to do
+  if (storedGranolaTitle === newTitle) {
+    return { renamed: false };
+  }
+
+  // Granola title changed. Check if the user renamed the file in Obsidian
+  // by comparing the current filename to what the OLD Granola title would produce.
+  const oldExpectedFilename = `${datePrefix} - ${cleanTitleForFilename(storedGranolaTitle)}.md`;
+  const actualFilename = basename(existingFilePath);
+
+  if (actualFilename !== oldExpectedFilename) {
+    // User renamed the file in Obsidian — respect their rename, just update
+    // the stored granola_title so we don't check again next sync
+    parsed.data.granola_title = newTitle;
+    const updated = matter.stringify(parsed.content, parsed.data);
+    await writeFile(existingFilePath, updated, "utf-8");
+    return { renamed: false };
+  }
+
+  // Filename still matches old Granola title — safe to rename
+  const newCleanTitle = cleanTitleForFilename(newTitle);
+  const newFilename = `${datePrefix} - ${newCleanTitle}.md`;
+  const newPath = join(dirname(existingFilePath), newFilename);
+
+  await rename(existingFilePath, newPath);
+
+  // Update the heading and stored granola_title
+  parsed.data.granola_title = newTitle;
+  const updatedContent = parsed.content.replace(
+    /^# .+$/m,
+    `# ${newTitle}`,
+  );
+  const updatedMarkdown = matter.stringify(updatedContent, parsed.data);
+  await writeFile(newPath, updatedMarkdown, "utf-8");
+
+  return { renamed: true, newPath };
 }
 
 // DAILY NOTE LOGGING
@@ -1102,6 +1177,20 @@ async function main(): Promise<void> {
       // For 1:1 and recurring meetings, allow reprocessing even if it exists as ad-hoc
       // This handles cases where a meeting was previously created as ad-hoc but should be in a 1:1 or recurring file
       if (existingFiledMeeting && category.type === "adHoc") {
+        // Check if the title changed in Granola and rename the file if so
+        try {
+          const renameResult = await renameIfTitleChanged(
+            existingFiledMeeting.filePath,
+            ensureTitle(meeting.title),
+          );
+          if (renameResult.renamed) {
+            console.log(`✏️  Renamed: ${ensureTitle(meeting.title)}`);
+            // Update the index entry so subsequent lookups use the new path
+            existingFiledMeeting.filePath = renameResult.newPath!;
+          }
+        } catch (err: any) {
+          console.error(`⚠️  Failed to rename ${ensureTitle(meeting.title)}: ${err.message}`);
+        }
         // Only skip ad-hoc meetings that already exist
         console.log(`⏭️  Already exists: ${ensureTitle(meeting.title)}`);
         continue;
