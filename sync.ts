@@ -59,6 +59,11 @@ const config = {
   // Meeting processing config
   enableMeetingProcessing: process.env.ENABLE_MEETING_PROCESSING === "true",
   vaultOpsScriptPath: process.env.VAULT_OPS_SCRIPT_PATH,
+  // Daily note config
+  dailyNotesPath: process.env.DAILY_NOTES_PATH || "Calendar/Days",
+  dailyNoteTemplatePath: process.env.DAILY_NOTE_TEMPLATE_PATH || "x/Templates/Daily Template - Simple.md",
+  dailyNoteInsertBefore: process.env.DAILY_NOTE_INSERT_BEFORE || "## Log",
+  dailyNoteSectionHeading: process.env.DAILY_NOTE_SECTION_HEADING || "### Meeting Notes",
   // Debug logging
   debug: process.env.DEBUG === "true",
   // Pushover config for future use
@@ -617,7 +622,12 @@ async function handleOneOnOneMeeting(
   const dateStr = data.startTime.toLocaleDateString("en-CA", {
     timeZone: "America/Los_Angeles",
   });
-
+  const timeStr = data.startTime.toLocaleTimeString("en-GB", {
+    timeZone: "America/Los_Angeles",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
   try {
     await access(oneOnOnePath);
     // File exists - check if already synced
@@ -636,7 +646,7 @@ async function handleOneOnOneMeeting(
     // Append to it
 
     // Create new section for this meeting
-    const newSection = `## [[${dateStr}]]
+    const newSection = `## [[${dateStr}]] ${timeStr}
 
 ${data.panelContent || ""}
 \n---\n`;
@@ -678,7 +688,7 @@ action:
   replacement: x/Templates/1 <> 1 Recurring Section Template
   templater: true
 \`\`\`
-## [[${dateStr}]]
+## [[${dateStr}]] ${timeStr}
 
 ${data.panelContent || ""}
 `;
@@ -708,6 +718,12 @@ async function handleRecurringMeeting(
   const dateStr = data.startTime.toLocaleDateString("en-CA", {
     timeZone: "America/Los_Angeles",
   });
+  const timeStr = data.startTime.toLocaleTimeString("en-GB", {
+    timeZone: "America/Los_Angeles",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 
   try {
     await access(recurringPath);
@@ -725,7 +741,7 @@ async function handleRecurringMeeting(
     }
 
     // Create new section for this meeting
-    const newSection = `# ${dateStr}
+    const newSection = `# [[${dateStr}]] ${timeStr}
 
 ${data.panelContent || ""}
 
@@ -768,7 +784,7 @@ action:
   replacement: x/Templates/1 <> 1 Recurring Section Template
   templater: true
 \`\`\`
-# ${dateStr}
+# [[${dateStr}]] ${timeStr}
 
 ${data.panelContent || ""}
 `;
@@ -795,8 +811,9 @@ async function handleAdHocMeeting(
   });
 
   const cleanTitle = cleanTitleForFilename(data.title);
+  const timeStr = formatRoundedTime(data.startTime);
 
-  const filename = `${pacificDateStr} - ${cleanTitle}.md`;
+  const filename = `${pacificDateStr} ${timeStr} - ${cleanTitle}.md`;
   const filePath = join(VAULT_PATH, "Ad-hoc", filename);
 
   // Extract attendee names
@@ -848,6 +865,27 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
 }
 
+// FORMAT TIME ROUNDED TO NEAREST 15 MINUTES IN 24H (e.g. "1915")
+function formatRoundedTime(date: Date): string {
+  const tz = { timeZone: "America/Los_Angeles" } as const;
+  let hour = parseInt(date.toLocaleString("en-US", { ...tz, hour: "numeric", hour12: false }));
+  let minute = parseInt(date.toLocaleString("en-US", { ...tz, minute: "numeric" }));
+
+  // Round to nearest 15 minutes
+  const remainder = minute % 15;
+  if (remainder >= 8) {
+    minute += 15 - remainder;
+  } else {
+    minute -= remainder;
+  }
+  if (minute >= 60) {
+    minute = 0;
+    hour = (hour + 1) % 24;
+  }
+
+  return `${hour}h${minute.toString().padStart(2, "0")}`;
+}
+
 // CLEAN TITLE FOR FILENAME (shared by ad-hoc creation and rename)
 function cleanTitleForFilename(title: string): string {
   return title
@@ -873,13 +911,13 @@ async function renameIfTitleChanged(
 ): Promise<{ renamed: boolean; newPath?: string }> {
   const oldFilename = basename(existingFilePath, ".md");
 
-  // Ad-hoc filenames are: "YYYY-MM-DD - {cleanTitle}"
-  const dateMatch = oldFilename.match(/^(\d{4}-\d{2}-\d{2}) - /);
+  // Ad-hoc filenames are: "YYYY-MM-DD H：MMam/pm - {cleanTitle}" (or legacy "YYYY-MM-DD - {cleanTitle}")
+  const dateMatch = oldFilename.match(/^(\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}h\d{2})?)\s+-\s+/);
   if (!dateMatch) {
     return { renamed: false };
   }
 
-  const datePrefix = dateMatch[1];
+  const dateTimePrefix = dateMatch[1];
   const content = await readFile(existingFilePath, "utf-8");
   const parsed = matter(content);
 
@@ -901,7 +939,7 @@ async function renameIfTitleChanged(
 
   // Granola title changed. Check if the user renamed the file in Obsidian
   // by comparing the current filename to what the OLD Granola title would produce.
-  const oldExpectedFilename = `${datePrefix} - ${cleanTitleForFilename(storedGranolaTitle)}.md`;
+  const oldExpectedFilename = `${dateTimePrefix} - ${cleanTitleForFilename(storedGranolaTitle)}.md`;
   const actualFilename = basename(existingFilePath);
 
   if (actualFilename !== oldExpectedFilename) {
@@ -915,7 +953,7 @@ async function renameIfTitleChanged(
 
   // Filename still matches old Granola title — safe to rename
   const newCleanTitle = cleanTitleForFilename(newTitle);
-  const newFilename = `${datePrefix} - ${newCleanTitle}.md`;
+  const newFilename = `${dateTimePrefix} - ${newCleanTitle}.md`;
   const newPath = join(dirname(existingFilePath), newFilename);
 
   await rename(existingFilePath, newPath);
@@ -938,14 +976,14 @@ async function logToDaily(
   action: string,
   targetName: string,
 ): Promise<void> {
-  const daysPath = join(VAULT_ROOT, "Calendar", "Days");
+  const daysPath = join(VAULT_ROOT, config.dailyNotesPath);
 
   const dateStr = date.toLocaleDateString("en-CA", {
     timeZone: "America/Los_Angeles",
   });
   const dailyNotePath = join(daysPath, `${dateStr}.md`);
 
-  // Create "Synced Meetings" section entry
+  const sectionHeading = config.dailyNoteSectionHeading;
   const logEntry = `- ${action} [[${targetName}]]`;
 
   try {
@@ -959,31 +997,30 @@ async function logToDaily(
       return;
     }
 
-    // Check if "Synced Meetings" section exists
-    if (parsed.content.includes("# Synced Meetings")) {
+    // Check if section already exists
+    const sectionPattern = sectionHeading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (parsed.content.includes(sectionHeading)) {
       // Append to existing section
       const updated = parsed.content.replace(
-        /(# Synced Meetings\n)/,
+        new RegExp(`(${sectionPattern}\n)`),
         `$1${escapeReplacement(logEntry)}\n`,
       );
       const markdown = matter.stringify(updated, parsed.data);
       await writeFile(dailyNotePath, markdown, "utf-8");
     } else {
-      // Add new section
-      const synced = `\n# Synced Meetings\n${logEntry}\n`;
-      const updated = parsed.content + synced;
+      // Insert new section before the --- that precedes the anchor heading
+      const anchorPattern = config.dailyNoteInsertBefore.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const updated = parsed.content.replace(
+        new RegExp(`(---\n+)(${anchorPattern})`),
+        `${sectionHeading}\n${escapeReplacement(logEntry)}\n\n$1$2`,
+      );
       const markdown = matter.stringify(updated, parsed.data);
       await writeFile(dailyNotePath, markdown, "utf-8");
     }
   } catch (error) {
     // Daily note doesn't exist - create it using template
     try {
-      const templatePath = join(
-        VAULT_ROOT,
-        "x",
-        "Templates",
-        "Periodic Notes - Daily Template.md",
-      );
+      const templatePath = join(VAULT_ROOT, config.dailyNoteTemplatePath);
       const templateContent = await readFile(templatePath, "utf-8");
       const parsed = matter(templateContent);
 
@@ -991,10 +1028,11 @@ async function logToDaily(
       const newFrontmatter = { ...parsed.data, created: dateStr };
       let newContent = parsed.content;
 
-      // Add Synced Meetings section before Quick Capture
+      // Insert section before the --- that precedes the anchor heading
+      const anchorPattern = config.dailyNoteInsertBefore.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       newContent = newContent.replace(
-        /(## Quick Capture)/,
-        `## Synced Meetings\n${escapeReplacement(logEntry)}\n\n$1`,
+        new RegExp(`(---\n+)(${anchorPattern})`),
+        `${sectionHeading}\n${escapeReplacement(logEntry)}\n\n$1$2`,
       );
 
       const markdown = matter.stringify(newContent, newFrontmatter);
