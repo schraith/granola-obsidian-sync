@@ -84,6 +84,246 @@ if (config.enableMeetingProcessing) {
 
 // --- END CONFIGURATION ---
 
+// ATTENDEE-TO-PEOPLE MAPPING
+// Maps email prefixes and name variants to canonical [[People]] wikilinks.
+// See also: Obsidian vault x/Attendee Mapping.md
+const ATTENDEE_MAP: Record<string, string> = {
+  // FactorLab
+  "barry nelson": "[[Barry Nelson]]", "barryn@factorlab.com": "[[Barry Nelson]]",
+  "john mavros": "[[John Mavros]]", "jmavros@factorlab.com": "[[John Mavros]]",
+  "kristopher@factorlab.com": "[[Kris Smith]]", "kristopher smith": "[[Kris Smith]]",
+  "kristopher": "[[Kris Smith]]", "chris": "[[Kris Smith]]", "kris smith": "[[Kris Smith]]",
+  "brian@factorlab.com": "[[Brian Vannoni]]", "brian vannoni": "[[Brian Vannoni]]",
+  "katieb@factorlab.com": "[[Katie Berriatua]]", "katie berriatua": "[[Katie Berriatua]]",
+  "justin@factorlab.com": "[[Justin Morrow]]", "justin morrow": "[[Justin Morrow]]",
+  "teresa@factorlab.com": "[[Teresa DeVore]]", "teresa devore": "[[Teresa DeVore]]",
+  "rachel@factorlab.com": "[[Rachel Varghese]]", "rachel varghese": "[[Rachel Varghese]]",
+  // InstantSys
+  "sanjay.jain@instantsys.com": "[[Sanjay Jain]]", "sanjay@factorlab.com": "[[Sanjay Jain]]",
+  "sanjay jain": "[[Sanjay Jain]]",
+  "vipin@instantsys.com": "[[Vipin Chawla]]", "vipin chawla": "[[Vipin Chawla]]",
+  "vikas.ahlawat@instantsys.com": "[[Vikas Ahlawat]]", "vikas ahlawat": "[[Vikas Ahlawat]]",
+  "pooja.gupta@instantsys.com": "[[Pooja Gupta]]",
+  "nidhi.rai@instantsys.com": "[[Nidhi Rai]]",
+  "parthh.dikshit@instantsys.com": "[[Parthh Dikshit]]",
+  "prabhash.shrivastava@instantsys.com": "[[Prabhash Shrivastava]]",
+  "itisha.yadav@instantsys.com": "[[Itisha Yadav]]",
+  "tushar.kundoo@instantsys.com": "[[Tushar Kundoo]]",
+  "kashish.sharma@instantsys.com": "[[Kashish Sharma]]",
+  "kavya.shree@instantsys.com": "[[Kavya Shree]]",
+  "krishan.yadav@instantsys.com": "[[Krishan Yadav]]",
+  "saar.bhatt@instantsys.com": "[[Saar Bhatt]]",
+  "hardik.gupta@instantsys.com": "[[Hardik Gupta]]",
+  "arvind.dayal@instantsys.com": "[[Arvind Dayal]]",
+  "atul.dhadse@instantsys.com": "[[Atul Dhadse]]",
+  "shivi.bhardwaj@instantsys.com": "[[Shivi Bhardwaj]]",
+  // DuploCloud
+  "sana@duplocloud.net": "[[Sana Khetarpal]]",
+  "kalpesh@duplocloud.net": "[[Kalpesh Suryawanshi]]",
+  "saurabh.adhau@duplocloud.net": "[[Saurabh Adhau]]",
+  // Scrut
+  "siddhi@scrut.io": "[[Siddhi Vadhwana]]", "siddhi vadhwana": "[[Siddhi Vadhwana]]",
+  // Lambert Labs
+  "guy@lambertlabs.com": "[[Guy Lambert]]",
+  // Personal
+  "bethanylkay@gmail.com": "[[Bethany Kay]]", "bethany.kay@armanino.com": "[[Bethany Kay]]",
+  "blythejim@gmail.com": "[[Jim Blythe]]",
+};
+
+const SKIP_ATTENDEES = new Set(["recruitment@noida.instantsys.com"]);
+
+function normalizeAttendees(rawAttendees: string[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawAttendees) {
+    if (SKIP_ATTENDEES.has(raw.toLowerCase())) continue;
+    const lookup = raw.toLowerCase().trim();
+    const mapped = ATTENDEE_MAP[lookup];
+    const value = mapped ? `"${mapped}"` : raw;
+    if (!seen.has(value)) {
+      seen.add(value);
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+// MEETING TAG CLASSIFICATION
+// Assigns mtg/*, topic/*, vendor/*, customer/* tags based on title and content.
+
+const CUSTOMER_PATTERNS: Record<string, string[]> = {
+  "customer/je-dunn": ["je dunn"],
+  "customer/layton": ["layton"],
+  "customer/mastec": ["mastec"],
+  "customer/entergy": ["entergy"],
+  "customer/hensel-phelps": ["hensel phelps"],
+  "customer/flintco": ["flintco"],
+  "customer/performance-contracting": ["performance contracting"],
+  "customer/clark": ["clark construction"],
+  "customer/walker": ["walker engineering"],
+  "customer/dpr": ["dpr construction"],
+  "customer/indot": ["indot"],
+  "customer/mckinstry": ["mckinstry"],
+};
+
+const VENDOR_PATTERNS: Record<string, string[]> = {
+  "vendor/duplocloud": ["duplocloud"],
+  "vendor/scrut": ["scrut"],
+  "vendor/deepsense": ["deepsense"],
+  "vendor/lambert-labs": ["lambert labs", "lambert lab"],
+  "vendor/blueprint": ["blueprint", "lho"],
+  "vendor/allcloud": ["allcloud"],
+};
+
+const HEALTH_TITLE_PATTERNS = [
+  /\bdoctor\b/i, /\bdr\./i, /\bmedical\b/i, /\bhospital\b/i,
+  /\btherapy\b/i, /\blmft\b/i, /\bpsychiatr/i, /\bkidney\b/i,
+  /\bcardiac\b/i, /\bdreemhealth\b/i, /\bremote visit\b/i,
+  /\bpatient visit\b/i, /\bsleep\b/i, /\bhealth coach\b/i,
+];
+
+const TOPIC_PATTERNS: Record<string, { terms: string[]; words?: string[] }> = {
+  "topic/nlp": {
+    terms: ["genesis", "dialogue system", "semantic search", "intent", "slot filling", "entity extraction", "qdrant", "embeddings", "retrieval system"],
+    words: ["nlp", "rag", "llm"],
+  },
+  "topic/data-pipeline": {
+    terms: ["data pipeline", "databricks", "ingestion", "etl", "data validation"],
+  },
+  "topic/insights": {
+    terms: ["insights dashboard", "triggers", "notifications", "insight score"],
+  },
+  "topic/infra": {
+    terms: ["duplocloud", "kubernetes", "k8s", "docker", "redis", "infrastructure", "eks", "ec2", "devops", "ci/cd", "terraform"],
+    words: ["aws"],
+  },
+  "topic/security": {
+    terms: ["soc2", "soc 2", "scrut", "vapt", "compliance", "disaster recovery", "mfa", "sso", "security audit", "brute force"],
+  },
+  "topic/api": {
+    terms: ["endpoints", "postman", "contractor api", "integration api", "api rate limit"],
+    words: ["api"],
+  },
+  "topic/ux": {
+    terms: ["design review", "user interface", "mobile app", "figma", "wireframe"],
+    words: ["ui", "ux", "frontend"],
+  },
+};
+
+function classifyMeetingTags(title: string, content: string, people: string[]): string[] {
+  const tags: string[] = [];
+  const titleLower = title.toLowerCase();
+  const fullLower = (title + " " + content.slice(0, 3000)).toLowerCase();
+  const peopleLower = people.map((p) => p.toLowerCase());
+
+  // --- Meeting purpose (exactly one mtg/* tag) ---
+  let mtgTag: string | undefined;
+
+  // 1. Recruiting
+  if (/\binterview\b|\brecruiting\b/.test(titleLower)) {
+    mtgTag = "mtg/recruiting";
+  }
+
+  // 2. Customer
+  if (!mtgTag) {
+    for (const [, patterns] of Object.entries(CUSTOMER_PATTERNS)) {
+      if (patterns.some((p) => titleLower.includes(p))) {
+        mtgTag = "mtg/customer";
+        break;
+      }
+    }
+  }
+
+  // 3. Vendor
+  if (!mtgTag) {
+    for (const [, patterns] of Object.entries(VENDOR_PATTERNS)) {
+      if (patterns.some((p) => titleLower.includes(p))) {
+        mtgTag = "mtg/vendor";
+        break;
+      }
+    }
+  }
+
+  // 4. Health
+  if (!mtgTag) {
+    if (HEALTH_TITLE_PATTERNS.some((p) => p.test(titleLower))) {
+      mtgTag = "mtg/health";
+    }
+  }
+
+  // 5. Family
+  if (!mtgTag) {
+    const familyPeople = ["mia schraith", "brody schraith", "jackson schraith", "chase braga", "bethany kay"];
+    const familyTerms = ["football", "school meeting", "film study", "dorm", "senior trip"];
+    if (familyTerms.some((t) => titleLower.includes(t))) {
+      mtgTag = "mtg/family";
+    } else if (peopleLower.some((p) => familyPeople.some((f) => p.includes(f)))) {
+      mtgTag = "mtg/family";
+    }
+  }
+
+  // 6. Finance
+  if (!mtgTag && ["chase bank", "amex", "credit card", "loan", "bhg financial", "insurance"].some((t) => titleLower.includes(t))) {
+    mtgTag = "mtg/finance";
+  }
+
+  // 7. Education
+  if (!mtgTag && ["sdsu", "ucla", "academic"].some((t) => titleLower.includes(t))) {
+    mtgTag = "mtg/education";
+  }
+
+  // 8. Strategy
+  if (!mtgTag && ["summit", "leadership", "all-hands", "strategy"].some((t) => titleLower.includes(t))) {
+    mtgTag = "mtg/strategy";
+  }
+
+  // 9. Team management
+  if (!mtgTag && (/\bidp\b/.test(titleLower) || titleLower.includes("performance review"))) {
+    mtgTag = "mtg/team-mgmt";
+  }
+
+  // 10. Engineering vs product vs personal (content-based)
+  if (!mtgTag) {
+    const engTerms = ["bug", "architecture", "deploy", "testing", "data pipeline", "database", "infrastructure", "sprint", "release", "incident", "outage", "kubernetes", "backend", "refactor", "migration", "schema", "endpoint", "staging", "production"];
+    const contentLower = content.slice(0, 3000).toLowerCase();
+    if (engTerms.some((t) => contentLower.includes(t)) || ["sync", "huddle", "update", "review", "weekly", "discussion"].some((t) => titleLower.includes(t))) {
+      mtgTag = "mtg/engineering";
+    } else {
+      mtgTag = "mtg/personal";
+    }
+  }
+
+  tags.push(mtgTag);
+
+  // --- Topic tags (work meetings only) ---
+  const personalCats = new Set(["mtg/health", "mtg/family", "mtg/finance", "mtg/education", "mtg/personal"]);
+  if (!personalCats.has(mtgTag)) {
+    for (const [tag, { terms, words }] of Object.entries(TOPIC_PATTERNS)) {
+      if (terms.some((t) => fullLower.includes(t))) {
+        tags.push(tag);
+      } else if (words?.some((w) => new RegExp(`\\b${w}\\b`).test(fullLower))) {
+        tags.push(tag);
+      }
+    }
+  }
+
+  // --- Vendor tags ---
+  for (const [tag, patterns] of Object.entries(VENDOR_PATTERNS)) {
+    if (patterns.some((p) => fullLower.includes(p))) {
+      tags.push(tag);
+    }
+  }
+
+  // --- Customer tags ---
+  for (const [tag, patterns] of Object.entries(CUSTOMER_PATTERNS)) {
+    if (patterns.some((p) => fullLower.includes(p))) {
+      tags.push(tag);
+    }
+  }
+
+  return tags;
+}
+
 // LOGGING SETUP
 const getPSTDateString = (): string => {
   const now = new Date();
@@ -665,7 +905,7 @@ ${data.panelContent || ""}
 
     const updated = matter.stringify(updatedContent, parsed.data);
     await writeFile(oneOnOnePath, updated, "utf-8");
-    await logToDaily(data.startTime, "Appended to", `1 <> 1 ${personName}`);
+    await logToDaily(data.startTime, "Appended to", `1 <> 1 ${personName}`, timeStr);
     return {
       success: true,
       action: `Appended to [[1 <> 1 ${personName}]]`,
@@ -697,7 +937,7 @@ ${data.panelContent || ""}
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(oneOnOnePath), { recursive: true });
     await writeFile(oneOnOnePath, markdown, "utf-8");
-    await logToDaily(data.startTime, "Created", `1 <> 1 ${personName}`);
+    await logToDaily(data.startTime, "Created", `1 <> 1 ${personName}`, timeStr);
     return {
       success: true,
       action: `Created new 1 <> 1 ${personName}`,
@@ -761,7 +1001,7 @@ ${data.panelContent || ""}
 
     const updated = matter.stringify(updatedContent, parsed.data);
     await writeFile(recurringPath, updated, "utf-8");
-    await logToDaily(data.startTime, "Appended to", meetingName);
+    await logToDaily(data.startTime, "Appended to", meetingName, timeStr);
     return {
       success: true,
       action: `Appended to [[${meetingName}]]`,
@@ -793,7 +1033,7 @@ ${data.panelContent || ""}
     const markdown = matter.stringify(newContent, frontmatter);
     await mkdir(dirname(recurringPath), { recursive: true });
     await writeFile(recurringPath, markdown, "utf-8");
-    await logToDaily(data.startTime, "Created recurring", meetingName);
+    await logToDaily(data.startTime, "Created recurring", meetingName, timeStr);
     return {
       success: true,
       action: `Created new recurring: ${meetingName}`,
@@ -816,8 +1056,9 @@ async function handleAdHocMeeting(
   const filename = `${pacificDateStr} ${timeStr} - ${cleanTitle}.md`;
   const filePath = join(VAULT_PATH, "Ad-hoc", filename);
 
-  // Extract attendee names
-  const attendeeNames = data.attendees.map((a) => a.split(" <")[0]);
+  // Extract and normalize attendee names to [[People]] wikilinks
+  const rawAttendeeNames = data.attendees.map((a) => a.split(" <")[0]);
+  const people = normalizeAttendees(rawAttendeeNames);
 
   // Format dates in local timezone (America/Los_Angeles)
   const tz = { timeZone: "America/Los_Angeles" } as const;
@@ -843,10 +1084,11 @@ async function handleAdHocMeeting(
     created: formatLocalDate(data.startTime),
     start_time: formatLocalDateTime(data.startTime),
     end_time: data.endTime ? formatLocalDateTime(data.endTime) : "",
-    attendees: attendeeNames,
+    people: people,
     source: "granola",
     calendar_event_id: data.id,
     granola_title: data.title,
+    tags: classifyMeetingTags(data.title, data.panelContent || "", people),
   };
 
   const content = `# ${data.title}
@@ -859,7 +1101,7 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
   const markdown = matter.stringify(content, frontmatter);
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, markdown, "utf-8");
-  const displayName = `${pacificDateStr} - ${cleanTitle}`;
+  const displayName = `${pacificDateStr} ${timeStr} - ${cleanTitle}`;
   await logToDaily(data.startTime, "Created ad hoc", displayName);
 
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
@@ -975,6 +1217,7 @@ async function logToDaily(
   date: Date,
   action: string,
   targetName: string,
+  timeStr?: string,
 ): Promise<void> {
   const daysPath = join(VAULT_ROOT, config.dailyNotesPath);
 
@@ -984,7 +1227,8 @@ async function logToDaily(
   const dailyNotePath = join(daysPath, `${dateStr}.md`);
 
   const sectionHeading = config.dailyNoteSectionHeading;
-  const logEntry = `- ${action} [[${targetName}]]`;
+  const timeSuffix = timeStr ? ` ${timeStr}` : "";
+  const logEntry = `- ${action} [[${targetName}]]${timeSuffix}`;
 
   try {
     // Try to read existing daily note
