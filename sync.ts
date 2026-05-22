@@ -17,6 +17,11 @@ import { homedir } from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { fileURLToPath } from "url";
+import {
+  pbkdf2Sync,
+  createDecipheriv,
+  createDecipheriv as createDecipherGcm,
+} from "crypto";
 import matter from "gray-matter";
 import {
   processTranscript,
@@ -441,6 +446,217 @@ const API_BASE = "https://api.granola.ai/v1";
 const VAULT_ROOT = config.obsidianVaultRoot;
 const VAULT_PATH = join(config.obsidianVaultRoot, config.obsidianVaultMeetingsPath);
 const TOKEN_PATH = config.granolaAuthPath;
+
+// Granola requires these headers on all API calls since ~May 2026
+const GRANOLA_CLIENT_VERSION = "7.255.6";
+const GRANOLA_API_HEADERS = {
+  "X-Client-Version": GRANOLA_CLIENT_VERSION,
+  "X-Granola-Platform": "darwin",
+} as const;
+
+// WorkOS client ID extracted from the Granola app bundle (auth issuer)
+const WORKOS_CLIENT_ID = "client_01JZJ0XBDAT8PHJWQY09Y0VD61";
+const WORKOS_AUTH_URL = "https://auth.granola.ai/user_management/authenticate";
+const STORED_ACCOUNTS_PATH = join(
+  homedir(),
+  "Library/Application Support/Granola/stored-accounts.json",
+);
+
+/** Decode a JWT payload without verifying the signature. */
+function decodeJwtPayload(jwt: string): Record<string, any> {
+  const part = jwt.split(".")[1];
+  const padded = part + "=".repeat((4 - (part.length % 4)) % 4);
+  return JSON.parse(Buffer.from(padded, "base64").toString("utf-8"));
+}
+
+/** Return true when the JWT exp claim is in the past (or within 60 s). */
+function isTokenExpired(jwt: string): boolean {
+  try {
+    const payload = decodeJwtPayload(jwt);
+    const exp = payload.exp as number | undefined;
+    if (!exp) return false;
+    return Date.now() / 1000 > exp - 60;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Refresh a WorkOS access token using the stored refresh_token.
+ * Returns the new access_token string, or throws on failure.
+ */
+async function refreshWorkosToken(refreshToken: string): Promise<{
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}> {
+  const res = await fetch(WORKOS_AUTH_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: WORKOS_CLIENT_ID,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Token refresh failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+/**
+ * Read the macOS Keychain entry for Granola Safe Storage and return the raw
+ * password string (NOT base64-decoded — Chrome uses the string as-is for PBKDF2).
+ */
+async function getGranolaSafeStoragePassword(): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("security", [
+      "find-generic-password",
+      "-s",
+      "Granola Safe Storage",
+      "-w",
+    ]);
+    return stdout.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Decrypt storage.dek (Chrome v10 AES-128-CBC) and return the raw 32-byte DEK.
+ * The safeStoragePassword is used AS-IS as the PBKDF2 password (not base64-decoded).
+ */
+function decryptDek(
+  dekFileContents: Buffer,
+  safeStoragePassword: string,
+): Buffer {
+  const salt = Buffer.from("saltysalt");
+  const key = pbkdf2Sync(
+    Buffer.from(safeStoragePassword),
+    salt,
+    1003,
+    16,
+    "sha1",
+  );
+  const prefix = dekFileContents.subarray(0, 3).toString();
+  if (prefix !== "v10") throw new Error(`Unexpected DEK prefix: ${prefix}`);
+  const ciphertext = dekFileContents.subarray(3);
+  const iv = Buffer.alloc(16, 0x20); // 16 space chars
+  const decipher = createDecipheriv("aes-128-cbc", key, iv);
+  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  // decrypted is base64-encoded DEK
+  return Buffer.from(decrypted.toString("utf8"), "base64");
+}
+
+/**
+ * Decrypt stored-accounts.json.enc using AES-256-GCM with the provided DEK.
+ * Format: IV(12) || ciphertext || GCM_tag(16)
+ */
+function decryptStorageFile(encData: Buffer, dek: Buffer): string {
+  const IV_LEN = 12;
+  const TAG_LEN = 16;
+  const iv = encData.subarray(0, IV_LEN);
+  const tag = encData.subarray(encData.length - TAG_LEN);
+  const ciphertext = encData.subarray(IV_LEN, encData.length - TAG_LEN);
+  const decipher = createDecipherGcm("aes-256-gcm", dek, iv) as any;
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+}
+
+/**
+ * Load an auth token from stored-accounts.json.enc (new encrypted Granola format)
+ * or fall back to the plaintext stored-accounts.json.
+ * Automatically refreshes expired tokens via WorkOS.
+ */
+async function getTokenFromStoredAccounts(): Promise<string | undefined> {
+  // Try encrypted .enc file first (the running Granola app writes here)
+  const encPath = STORED_ACCOUNTS_PATH + ".enc";
+  const plainPath = STORED_ACCOUNTS_PATH;
+
+  let rawJson: string | undefined;
+  let usingEnc = false;
+
+  try {
+    const [encStat, plainStat] = await Promise.allSettled([
+      import("fs/promises").then((m) => m.stat(encPath)),
+      import("fs/promises").then((m) => m.stat(plainPath)),
+    ]);
+    const encMtime =
+      encStat.status === "fulfilled" ? encStat.value.mtimeMs : 0;
+    const plainMtime =
+      plainStat.status === "fulfilled" ? plainStat.value.mtimeMs : 0;
+
+    if (encMtime > plainMtime) {
+      // Try to decrypt the .enc file
+      const safeStoragePwd = await getGranolaSafeStoragePassword();
+      if (safeStoragePwd) {
+        try {
+          const dekRaw = await readFile(
+            join(homedir(), "Library/Application Support/Granola/storage.dek"),
+          );
+          const dek = decryptDek(dekRaw, safeStoragePwd);
+          const encData = await readFile(encPath);
+          rawJson = decryptStorageFile(encData, dek);
+          usingEnc = true;
+        } catch (decErr: any) {
+          console.warn("⚠️  Could not decrypt stored-accounts.json.enc:", decErr.message);
+        }
+      }
+    }
+  } catch {
+    // stat failed, fall through
+  }
+
+  // Fall back to plaintext stored-accounts.json
+  if (!rawJson) {
+    try {
+      rawJson = await readFile(plainPath, "utf-8");
+    } catch (err: any) {
+      if (err.code !== "ENOENT") {
+        console.warn("⚠️  Could not read stored-accounts.json:", err.message);
+      }
+      return undefined;
+    }
+  }
+
+  try {
+    const raw = JSON.parse(rawJson);
+    const accounts: Array<{ email: string; tokens: string }> =
+      JSON.parse(raw.accounts);
+    if (!accounts || accounts.length === 0) return undefined;
+
+    const accountData = accounts[0];
+    let tokens = JSON.parse(accountData.tokens);
+    if (!tokens.access_token) return undefined;
+
+    if (isTokenExpired(tokens.access_token)) {
+      if (!tokens.refresh_token) {
+        console.log("⚠️  Access token expired and no refresh_token available");
+        return undefined;
+      }
+      console.log("🔄 Access token expired — refreshing...");
+      const newTokens = await refreshWorkosToken(tokens.refresh_token);
+      tokens = {
+        ...tokens,
+        access_token: newTokens.access_token,
+        refresh_token: newTokens.refresh_token,
+        expires_in: newTokens.expires_in,
+        obtained_at: Date.now(),
+      };
+      accountData.tokens = JSON.stringify(tokens);
+      raw.accounts = JSON.stringify(accounts);
+      // Only write back to the plaintext file (the .enc file requires the running app)
+      await writeFile(plainPath, JSON.stringify(raw), "utf-8");
+      console.log("✅ Token refreshed and saved to plaintext fallback");
+    }
+
+    return tokens.access_token;
+  } catch (err: any) {
+    console.warn("⚠️  Could not parse stored accounts:", err.message);
+    return undefined;
+  }
+}
 
 // Owner emails - used to identify "me" when inferring 1:1 partner from attendees
 const OWNER_EMAILS = new Set(
@@ -1316,6 +1532,7 @@ async function getPanels(documentId: string, token: string): Promise<Panel[]> {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
+        ...GRANOLA_API_HEADERS,
       },
       body: JSON.stringify({ document_id: documentId }),
       timeout: 30000,
@@ -1351,37 +1568,40 @@ async function main(): Promise<void> {
   // 2. GET AUTH TOKEN
   console.log("\n🔑 Loading auth token...");
   let token: string | undefined;
-  const tokenData = JSON.parse(await readFile(TOKEN_PATH, "utf-8"));
 
-  // Try to get token from access_token field
-  if (tokenData.access_token) {
-    token = tokenData.access_token;
-  } else if (
-    typeof tokenData.cognito_tokens === "string" &&
-    tokenData.cognito_tokens.length > 0
-  ) {
-    // Try parsing cognito_tokens as JSON
-    try {
-      const cognitoTokens = JSON.parse(tokenData.cognito_tokens);
-      if (cognitoTokens.access_token) {
-        token = cognitoTokens.access_token;
+  // Try stored-accounts.json first (new Granola format, supports auto-refresh)
+  token = await getTokenFromStoredAccounts();
+
+  // Fall back to legacy supabase.json / GRANOLA_AUTH_PATH
+  if (!token) {
+    const tokenData = JSON.parse(await readFile(TOKEN_PATH, "utf-8"));
+
+    if (tokenData.access_token) {
+      token = tokenData.access_token;
+    } else if (
+      typeof tokenData.cognito_tokens === "string" &&
+      tokenData.cognito_tokens.length > 0
+    ) {
+      try {
+        const cognitoTokens = JSON.parse(tokenData.cognito_tokens);
+        if (cognitoTokens.access_token) {
+          token = cognitoTokens.access_token;
+        }
+      } catch (e) {
+        token = tokenData.cognito_tokens;
       }
-    } catch (e) {
-      // If parsing cognito_tokens as JSON fails, assume it's the token itself
-      token = tokenData.cognito_tokens;
-    }
-  } else if (
-    typeof tokenData.workos_tokens === "string" &&
-    tokenData.workos_tokens.length > 0
-  ) {
-    try {
-      const workosTokens = JSON.parse(tokenData.workos_tokens);
-      if (workosTokens.access_token) {
-        token = workosTokens.access_token;
+    } else if (
+      typeof tokenData.workos_tokens === "string" &&
+      tokenData.workos_tokens.length > 0
+    ) {
+      try {
+        const workosTokens = JSON.parse(tokenData.workos_tokens);
+        if (workosTokens.access_token) {
+          token = workosTokens.access_token;
+        }
+      } catch (e) {
+        token = tokenData.workos_tokens;
       }
-    } catch (e) {
-      // If parsing workos_tokens as JSON fails, assume workos_tokens itself is the token.
-      token = tokenData.workos_tokens;
     }
   }
 
@@ -1396,6 +1616,7 @@ async function main(): Promise<void> {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
+        ...GRANOLA_API_HEADERS,
       },
       body: JSON.stringify({ limit: config.meetingsLimit }),
       timeout: 30000,
@@ -1543,6 +1764,7 @@ async function main(): Promise<void> {
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
+            ...GRANOLA_API_HEADERS,
           },
           body: JSON.stringify({ document_id: meeting.id }),
           timeout: 30000,
@@ -1556,6 +1778,7 @@ async function main(): Promise<void> {
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
+            ...GRANOLA_API_HEADERS,
           },
           body: JSON.stringify({ document_id: meeting.id }),
           timeout: 30000,

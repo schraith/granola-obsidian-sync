@@ -26,7 +26,7 @@ bun sync.ts
 
 ### Configuration
 All paths and tokens are configured via environment variables in `.env`:
-- **GRANOLA_AUTH_PATH**: Path to Granola's supabase.json auth file
+- **GRANOLA_AUTH_PATH**: Path to Granola's legacy `supabase.json` auth file (fallback only — see Auth below)
 - **OBSIDIAN_VAULT_MEETINGS_PATH**: Where meeting notes are saved in Obsidian
 - **PUSHOVER_USER_KEY** & **PUSHOVER_API_TOKEN**: Optional error notifications
 - **API Base**: `https://api.granola.ai/v1` (hardcoded as it's unlikely to change)
@@ -36,9 +36,32 @@ All paths and tokens are configured via environment variables in `.env`:
 - `/temp/`: All debug scripts, test files, and temporary utilities go here (git-tracked directory, all files inside are git-ignored except .gitkeep)
 - `/logs/`: Sync operation logs (if logging is enabled)
 
+## Auth Token Resolution
+
+As of May 2026, Granola migrated to an encrypted token store and also requires client-identification headers on every API call. The sync handles both:
+
+### Required API headers (added May 2026)
+Every Granola API request must include:
+- `X-Client-Version: <Granola app version>` — checked against the installed app at `GRANOLA_CLIENT_VERSION` in `sync.ts`
+- `X-Granola-Platform: darwin` — platform identifier
+
+Without these headers the API returns `{"message":"Unsupported client"}` (HTTP 200), which was the root cause of `TypeError: {} is not iterable` errors.
+
+### Token resolution order
+`getTokenFromStoredAccounts()` tries sources in order, stopping at the first valid token:
+
+1. **`stored-accounts.json.enc`** (primary) — encrypted file kept up-to-date by the running Granola Electron app. Decryption chain:
+   - Read `Granola Safe Storage` password from macOS Keychain via `security find-generic-password -s "Granola Safe Storage" -w`
+   - Decrypt `storage.dek` (Chrome v10 format: `v10` prefix + AES-128-CBC, key = PBKDF2-HMAC-SHA1(keychain_pwd, salt=`saltysalt`, iter=1003, keylen=16), IV = 16 space chars)
+   - Decrypt `stored-accounts.json.enc` with the DEK (AES-256-GCM, format: `IV[12] || ciphertext || tag[16]`)
+2. **`stored-accounts.json`** (plaintext fallback) — written by the app on login; may be stale between logins
+3. **`supabase.json` / `GRANOLA_AUTH_PATH`** (legacy fallback) — old auth format from before WorkOS migration
+
+If the access token from any source is expired (within 60 s of `exp`), `refreshWorkosToken()` exchanges the `refresh_token` via the WorkOS `/user_management/authenticate` endpoint (client ID: `client_01JZJ0XBDAT8PHJWQY09Y0VD61`) and saves the new tokens to the plaintext `stored-accounts.json` for the next run.
+
 ## Sync Behavior
 
-1. Reads auth token from Granola app support directory
+1. Reads auth token using the resolution chain above
 2. Fetches past meetings from Granola API (configurable limit, default 50)
 3. For each meeting with transcript:
    - Skips solo meetings and meetings without transcripts
@@ -65,9 +88,12 @@ The sync can be scheduled via:
 
 ## API Endpoints Used
 
+All requests require `X-Client-Version` and `X-Granola-Platform` headers (see Auth above).
+
 - `POST /v1/get-documents` - Fetch meeting list
 - `POST /v1/get-document-metadata` - Get meeting metadata
 - `POST /v1/get-document-transcript` - Get meeting transcript
+- `POST /v1/get-document-panels` - Get meeting panel summaries
 
 ## Development Notes
 
