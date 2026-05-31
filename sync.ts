@@ -448,7 +448,7 @@ const VAULT_PATH = join(config.obsidianVaultRoot, config.obsidianVaultMeetingsPa
 const TOKEN_PATH = config.granolaAuthPath;
 
 // Granola requires these headers on all API calls since ~May 2026
-const GRANOLA_CLIENT_VERSION = "7.255.6";
+const GRANOLA_CLIENT_VERSION = "7.277.1";
 const GRANOLA_API_HEADERS = {
   "X-Client-Version": GRANOLA_CLIENT_VERSION,
   "X-Granola-Platform": "darwin",
@@ -570,60 +570,47 @@ function decryptStorageFile(encData: Buffer, dek: Buffer): string {
  * Automatically refreshes expired tokens via WorkOS.
  */
 async function getTokenFromStoredAccounts(): Promise<string | undefined> {
-  // Try encrypted .enc file first (the running Granola app writes here)
   const encPath = STORED_ACCOUNTS_PATH + ".enc";
   const plainPath = STORED_ACCOUNTS_PATH;
 
-  let rawJson: string | undefined;
-  let usingEnc = false;
-
-  try {
-    const [encStat, plainStat] = await Promise.allSettled([
-      import("fs/promises").then((m) => m.stat(encPath)),
-      import("fs/promises").then((m) => m.stat(plainPath)),
-    ]);
-    const encMtime =
-      encStat.status === "fulfilled" ? encStat.value.mtimeMs : 0;
-    const plainMtime =
-      plainStat.status === "fulfilled" ? plainStat.value.mtimeMs : 0;
-
-    if (encMtime > plainMtime) {
-      // Try to decrypt the .enc file
-      const safeStoragePwd = await getGranolaSafeStoragePassword();
-      if (safeStoragePwd) {
-        try {
-          const dekRaw = await readFile(
-            join(homedir(), "Library/Application Support/Granola/storage.dek"),
-          );
-          const dek = decryptDek(dekRaw, safeStoragePwd);
-          const encData = await readFile(encPath);
-          rawJson = decryptStorageFile(encData, dek);
-          usingEnc = true;
-        } catch (decErr: any) {
-          console.warn("⚠️  Could not decrypt stored-accounts.json.enc:", decErr.message);
-        }
-      }
-    }
-  } catch {
-    // stat failed, fall through
-  }
-
-  // Fall back to plaintext stored-accounts.json
-  if (!rawJson) {
+  // Decrypt the .enc file written by the running Granola app, if present.
+  const readEncJson = async (): Promise<string | undefined> => {
+    const safeStoragePwd = await getGranolaSafeStoragePassword();
+    if (!safeStoragePwd) return undefined;
     try {
-      rawJson = await readFile(plainPath, "utf-8");
+      const dekRaw = await readFile(
+        join(homedir(), "Library/Application Support/Granola/storage.dek"),
+      );
+      const dek = decryptDek(dekRaw, safeStoragePwd);
+      const encData = await readFile(encPath);
+      return decryptStorageFile(encData, dek);
+    } catch (decErr: any) {
+      console.warn("⚠️  Could not decrypt stored-accounts.json.enc:", decErr.message);
+      return undefined;
+    }
+  };
+
+  const readPlainJson = async (): Promise<string | undefined> => {
+    try {
+      return await readFile(plainPath, "utf-8");
     } catch (err: any) {
       if (err.code !== "ENOENT") {
         console.warn("⚠️  Could not read stored-accounts.json:", err.message);
       }
       return undefined;
     }
-  }
+  };
 
-  try {
+  // Parse one stored-accounts blob and return a usable access token, refreshing
+  // if expired. Returns undefined when the blob has no account or no usable
+  // token, so the caller can fall through to the next source.
+  const tokenFromRawJson = async (
+    rawJson: string,
+  ): Promise<string | undefined> => {
     const raw = JSON.parse(rawJson);
-    const accounts: Array<{ email: string; tokens: string }> =
-      JSON.parse(raw.accounts);
+    const accounts: Array<{ email: string; tokens: string }> = JSON.parse(
+      raw.accounts,
+    );
     if (!accounts || accounts.length === 0) return undefined;
 
     const accountData = accounts[0];
@@ -652,10 +639,41 @@ async function getTokenFromStoredAccounts(): Promise<string | undefined> {
     }
 
     return tokens.access_token;
-  } catch (err: any) {
-    console.warn("⚠️  Could not parse stored accounts:", err.message);
-    return undefined;
+  };
+
+  // Prefer whichever file is newer, but fall through to the other source if the
+  // newer one yields no usable token. The new Granola app version (7.277.x)
+  // writes an EMPTY `{"accounts":"[]"}` to the .enc file while keeping a valid
+  // account in the plaintext file — returning early on the empty .enc would
+  // discard a working token.
+  let encMtime = 0;
+  let plainMtime = 0;
+  try {
+    const [encStat, plainStat] = await Promise.allSettled([
+      stat(encPath),
+      stat(plainPath),
+    ]);
+    encMtime = encStat.status === "fulfilled" ? encStat.value.mtimeMs : 0;
+    plainMtime = plainStat.status === "fulfilled" ? plainStat.value.mtimeMs : 0;
+  } catch {
+    // stat failed for both, fall through to reading whatever exists
   }
+
+  const sources =
+    encMtime > plainMtime ? [readEncJson, readPlainJson] : [readPlainJson, readEncJson];
+
+  for (const readSource of sources) {
+    const rawJson = await readSource();
+    if (!rawJson) continue;
+    try {
+      const token = await tokenFromRawJson(rawJson);
+      if (token) return token;
+    } catch (err: any) {
+      console.warn("⚠️  Could not parse stored accounts:", err.message);
+    }
+  }
+
+  return undefined;
 }
 
 // Owner emails - used to identify "me" when inferring 1:1 partner from attendees

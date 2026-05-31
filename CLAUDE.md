@@ -48,7 +48,7 @@ Every Granola API request must include:
 Without these headers the API returns `{"message":"Unsupported client"}` (HTTP 200), which was the root cause of `TypeError: {} is not iterable` errors.
 
 ### Token resolution order
-`getTokenFromStoredAccounts()` tries sources in order, stopping at the first valid token:
+`getTokenFromStoredAccounts()` tries sources in mtime order and **falls through to the next source if one yields no usable token** (not just on read/decrypt failure). This matters because newer Granola app versions (7.277.x) can write an empty `{"accounts":"[]"}` to `stored-accounts.json.enc` even while a valid account still lives in the plaintext file — returning early on the empty `.enc` would discard a working token. Sources, in preference order:
 
 1. **`stored-accounts.json.enc`** (primary) — encrypted file kept up-to-date by the running Granola Electron app. Decryption chain:
    - Read `Granola Safe Storage` password from macOS Keychain via `security find-generic-password -s "Granola Safe Storage" -w`
