@@ -59,6 +59,29 @@ Without these headers the API returns `{"message":"Unsupported client"}` (HTTP 2
 
 If the access token from any source is expired (within 60 s of `exp`), `refreshWorkosToken()` exchanges the `refresh_token` via the WorkOS `/user_management/authenticate` endpoint (client ID: `client_01JZJ0XBDAT8PHJWQY09Y0VD61`) and saves the new tokens to the plaintext `stored-accounts.json` for the next run.
 
+### Client version
+`X-Client-Version` is read **dynamically** at startup from the installed app's `Info.plist` (`getGranolaClientVersion()`), falling back to `GRANOLA_CLIENT_VERSION_FALLBACK` only if the app/plist can't be read. A stale version makes the API answer `{"message":"Unsupported client"}` at HTTP 200, which the sync now detects and reports explicitly. Keeping Granola updated keeps this header correct automatically — no manual bump needed.
+
+## Recovery (when the sync fails on auth)
+
+The sync fails loud with an **actionable Pushover/log message** that names the remedy. Map the symptom to the fix:
+
+| Symptom (log / Pushover) | Cause | Fix |
+| --- | --- | --- |
+| `401 Unauthorized` or `session has ended (refresh token rejected)` | WorkOS session ended; no usable token in any store | **Sign out and back in to the Granola desktop app**, then re-run `bun sync.ts`. A fresh login rewrites `stored-accounts.json.enc` with a live `refresh_token`. |
+| `"Unsupported client"` | `X-Client-Version` is stale (rare, since it's read dynamically) | **Update the Granola desktop app**, then re-run. |
+| `No usable Granola auth token found in any store` | All stores empty/unreadable | Confirm Granola is installed and logged in, then re-run. |
+
+Diagnostic commands:
+```bash
+# Are the token files fresh and non-empty? (tiny .enc ≈ empty accounts)
+ls -lat ~/Library/Application\ Support/Granola/stored-accounts.json*
+# Installed app version (compared against the dynamic X-Client-Version)
+defaults read /Applications/Granola.app/Contents/Info.plist CFBundleShortVersionString
+```
+
+If re-login no longer repopulates `stored-accounts.json[.enc]` at all, Granola has moved the token store again (it now also keeps a copy in the SQLCipher-encrypted `granola.db`) — that requires a code change to the resolution chain, not a runbook step.
+
 ## Sync Behavior
 
 1. Reads auth token using the resolution chain above

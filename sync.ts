@@ -447,8 +447,27 @@ const VAULT_ROOT = config.obsidianVaultRoot;
 const VAULT_PATH = join(config.obsidianVaultRoot, config.obsidianVaultMeetingsPath);
 const TOKEN_PATH = config.granolaAuthPath;
 
-// Granola requires these headers on all API calls since ~May 2026
-const GRANOLA_CLIENT_VERSION = "7.277.1";
+// Granola requires these headers on all API calls since ~May 2026.
+// A stale X-Client-Version makes the API return {"message":"Unsupported client"}
+// (HTTP 200), so we read the installed app's version at startup rather than
+// hardcoding it — the constant below is only a fallback when the app or its
+// Info.plist can't be read (e.g. running on a box without Granola installed).
+const GRANOLA_CLIENT_VERSION_FALLBACK = "7.277.1";
+
+async function getGranolaClientVersion(): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("defaults", [
+      "read",
+      "/Applications/Granola.app/Contents/Info.plist",
+      "CFBundleShortVersionString",
+    ]);
+    return stdout.trim() || GRANOLA_CLIENT_VERSION_FALLBACK;
+  } catch {
+    return GRANOLA_CLIENT_VERSION_FALLBACK;
+  }
+}
+
+const GRANOLA_CLIENT_VERSION = await getGranolaClientVersion();
 const GRANOLA_API_HEADERS = {
   "X-Client-Version": GRANOLA_CLIENT_VERSION,
   "X-Granola-Platform": "darwin",
@@ -504,6 +523,15 @@ async function refreshWorkosToken(refreshToken: string): Promise<{
   }
   return res.json();
 }
+
+// Set true when a token refresh is rejected because the WorkOS session has
+// ended (invalid_grant). Lets the final failure notification tell the user to
+// re-login instead of surfacing a generic 401.
+let authSessionEnded = false;
+
+// Actionable remedy appended to auth-failure notifications.
+const RELOGIN_HINT =
+  "Fix: open the Granola desktop app, sign out and back in, then re-run `bun sync.ts`.";
 
 /**
  * Read the macOS Keychain entry for Granola Safe Storage and return the raw
@@ -669,6 +697,9 @@ async function getTokenFromStoredAccounts(): Promise<string | undefined> {
       const token = await tokenFromRawJson(rawJson);
       if (token) return token;
     } catch (err: any) {
+      if (/invalid_grant|Session has already ended/i.test(err.message || "")) {
+        authSessionEnded = true;
+      }
       console.warn("⚠️  Could not parse stored accounts:", err.message);
     }
   }
@@ -1020,6 +1051,15 @@ function sendPushover(title: string, message: string): void {
   }).catch((err) => {
     console.error(`Pushover failed: ${err.message}`);
   });
+}
+
+// SEND A FAILURE NOTIFICATION, GIVE THE FIRE-AND-FORGET PUSHOVER TIME TO SEND,
+// THEN CRASH WITH THE SAME MESSAGE (fail-loud, with an actionable Pushover).
+async function notifyAndThrow(title: string, message: string): Promise<never> {
+  await logError(message);
+  sendPushover(title, message);
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  throw new Error(message);
 }
 
 // MEETING PROCESSING FUNCTION
@@ -1590,9 +1630,16 @@ async function main(): Promise<void> {
   // Try stored-accounts.json first (new Granola format, supports auto-refresh)
   token = await getTokenFromStoredAccounts();
 
-  // Fall back to legacy supabase.json / GRANOLA_AUTH_PATH
+  // Fall back to legacy supabase.json / GRANOLA_AUTH_PATH. A missing or
+  // unreadable legacy file is not fatal here — we fall through to the
+  // actionable "no token" error below rather than crashing with a raw ENOENT.
   if (!token) {
-    const tokenData = JSON.parse(await readFile(TOKEN_PATH, "utf-8"));
+    let tokenData: any;
+    try {
+      tokenData = JSON.parse(await readFile(TOKEN_PATH, "utf-8"));
+    } catch {
+      tokenData = {};
+    }
 
     if (tokenData.access_token) {
       token = tokenData.access_token;
@@ -1623,7 +1670,16 @@ async function main(): Promise<void> {
     }
   }
 
-  if (!token) throw new Error("No auth token found");
+  if (!token) {
+    // `throw await` (notifyAndThrow returns Promise<never>) so TS narrows
+    // `token` to a defined string for the rest of main().
+    throw await notifyAndThrow(
+      "Granola Sync FAILED — re-login needed",
+      authSessionEnded
+        ? `No usable Granola auth token — the desktop session has ended (refresh token rejected). ${RELOGIN_HINT}`
+        : `No usable Granola auth token found in any store. ${RELOGIN_HINT}`,
+    );
+  }
 
   // 3. FETCH PAST/PROCESSED MEETINGS FROM API
   console.log("\n📥 Fetching processed meetings from API..." + (isForceMode && forceDocumentId ? ` (force mode for ${forceDocumentId})` : ""));
@@ -1643,13 +1699,37 @@ async function main(): Promise<void> {
   );
 
   if (!docsResponse.ok) {
-    const error = `Docs API failed: ${docsResponse.status} ${docsResponse.statusText}`;
-    sendPushover("Granola Sync FAILED", error);
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for Pushover
-    throw new Error(error);
+    if (docsResponse.status === 401) {
+      await notifyAndThrow(
+        "Granola Sync FAILED — re-login needed",
+        `Granola API rejected the token (401 Unauthorized). The session has likely ended. ${RELOGIN_HINT}`,
+      );
+    }
+    await notifyAndThrow(
+      "Granola Sync FAILED",
+      `Docs API failed: ${docsResponse.status} ${docsResponse.statusText}`,
+    );
   }
 
-  const allMeetings: GranolaDoc[] = await docsResponse.json();
+  const docsBody: unknown = await docsResponse.json();
+
+  // The API answers a stale X-Client-Version with {"message":"Unsupported client"}
+  // at HTTP 200, which would otherwise crash later as "{} is not iterable".
+  if (!Array.isArray(docsBody)) {
+    const message = (docsBody as any)?.message;
+    if (message === "Unsupported client") {
+      await notifyAndThrow(
+        "Granola Sync FAILED — update Granola",
+        `Granola API rejected client version ${GRANOLA_CLIENT_VERSION} as "Unsupported client". Fix: update the Granola desktop app (the sync reads its version automatically), then re-run \`bun sync.ts\`.`,
+      );
+    }
+    await notifyAndThrow(
+      "Granola Sync FAILED",
+      `Docs API returned an unexpected non-array response: ${JSON.stringify(docsBody).slice(0, 200)}`,
+    );
+  }
+
+  const allMeetings: GranolaDoc[] = docsBody as GranolaDoc[];
   console.log(`   Found ${allMeetings.length} processed meetings`);
 
   const meetings = isForceMode && forceDocumentId
