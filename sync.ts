@@ -330,13 +330,13 @@ function classifyMeetingTags(title: string, content: string, people: string[]): 
 }
 
 // LOGGING SETUP
+// en-CA yields ISO-style "YYYY-MM-DD". en-US ("MM/DD/YYYY") would put slashes
+// in the log filename, making it an invalid path so every log write silently
+// failed via the .catch(() => {}) on appendFile.
 const getPSTDateString = (): string => {
   const now = new Date();
-  return now.toLocaleString("en-US", {
+  return now.toLocaleDateString("en-CA", {
     timeZone: "America/Los_Angeles",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
   });
 };
 
@@ -397,32 +397,60 @@ function hasNetworkConnection(): boolean {
 }
 
 // FAILURE TRACKING
+// Two independent consecutive-failure counters:
+//  - failureCountFile: real, actionable failures (auth, API changes, etc.)
+//  - networkFailureCountFile: transient network errors (timeouts, resets) that
+//    we don't want to alert on unless they persist (sustained outage).
 const failureCountFile = join(logDir, ".granola-sync-failures");
+const networkFailureCountFile = join(logDir, ".granola-sync-network-failures");
 
-async function incrementFailureCount(): Promise<number> {
+async function incrementCount(file: string): Promise<number> {
   try {
-    const content = await readFile(failureCountFile, "utf-8");
+    const content = await readFile(file, "utf-8");
     const count = parseInt(content) || 0;
-    await writeFile(failureCountFile, String(count + 1), "utf-8");
+    await writeFile(file, String(count + 1), "utf-8");
     return count + 1;
   } catch {
-    await writeFile(failureCountFile, "1", "utf-8");
+    await writeFile(file, "1", "utf-8");
     return 1;
   }
 }
 
-async function resetFailureCount(): Promise<void> {
-  await writeFile(failureCountFile, "0", "utf-8").catch(() => {});
+async function resetCount(file: string): Promise<void> {
+  await writeFile(file, "0", "utf-8").catch(() => {});
 }
 
-async function getFailureCount(): Promise<number> {
-  try {
-    const content = await readFile(failureCountFile, "utf-8");
-    return parseInt(content) || 0;
-  } catch {
-    return 0;
-  }
+const incrementFailureCount = () => incrementCount(failureCountFile);
+
+async function resetFailureCount(): Promise<void> {
+  // A clean run resets both real and transient streaks.
+  await resetCount(failureCountFile);
+  await resetCount(networkFailureCountFile);
 }
+
+// Transient network errors (fetch timeout/abort, connection reset/refused, DNS
+// hiccup) — surfaced as noise on flaky connections. Treated like "offline":
+// logged and skipped, alerting only if they persist (see threshold below).
+function isTransientNetworkError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = (error as any).name || "";
+  const code = (error as any).code || "";
+  const message = (error as any).message || "";
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  if (
+    ["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "EPIPE", "20", "23"].includes(
+      String(code),
+    )
+  ) {
+    return true;
+  }
+  // Bun/undici surface low-level network drops as a generic "fetch failed".
+  return /fetch failed|network|socket hang up|terminated/i.test(message);
+}
+
+// Send one Pushover alert only after this many consecutive transient network
+// failures, so a sustained outage isn't completely invisible.
+const NETWORK_FAILURE_ALERT_THRESHOLD = 6;
 
 // Load meeting mappings
 let meetingMappings: {
@@ -2045,9 +2073,6 @@ main().catch(async (error) => {
     process.exit(1);
   }
 
-  // Increment failure count
-  const failureCount = await incrementFailureCount();
-
   // Format error message
   let errorMessage = "";
   if (error instanceof Error) {
@@ -2062,6 +2087,26 @@ main().catch(async (error) => {
     errorMessage = String(error);
   }
 
+  // Transient network errors (timeouts, resets) on a flaky connection are noise.
+  // Track them on a separate streak and only alert if they persist, so a single
+  // hung request doesn't fire Pushover — but a sustained outage isn't invisible.
+  if (isTransientNetworkError(error)) {
+    const networkFailures = await incrementCount(networkFailureCountFile);
+    await logError(
+      `Transient network failure (${networkFailures}x): ${errorMessage}`,
+    );
+    if (networkFailures === NETWORK_FAILURE_ALERT_THRESHOLD) {
+      sendPushover(
+        "Granola Sync — network unreachable",
+        `Sync has hit ${networkFailures} consecutive network errors (likely a sustained connectivity issue).\n\nLatest error: ${errorMessage}`,
+      );
+    }
+    setTimeout(() => process.exit(1), 1000);
+    return;
+  }
+
+  // Real, actionable failure — increment the main streak.
+  const failureCount = await incrementFailureCount();
   await logError(`SYNC FAILED (attempt ${failureCount}): ${errorMessage}`);
 
   // Only send Pushover notification after 3 consecutive failures
