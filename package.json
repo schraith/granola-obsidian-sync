@@ -4,7 +4,9 @@
   "description": "Brutal simplification: Granola to Obsidian sync",
   "type": "module",
   "scripts": {
-    "sync": "bun run sync.ts"
+    "sync": "bun run sync.ts",
+    "test": "bun --no-env-file test",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "cheerio": "^1.1.2",

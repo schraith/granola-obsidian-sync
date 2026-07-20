@@ -15,6 +15,7 @@ import 'dotenv/config';
 interface TranscriptSegment {
   text?: string;
   source?: string;
+  speaker_label?: string;
   start_timestamp?: string;
   end_timestamp?: string;
 }
@@ -73,10 +74,10 @@ function toProcessedSegment(segment: TranscriptSegment): ProcessedSegment {
     : startTime;
 
   // Determine speaker based on source
-  let speaker = 'Unknown';
-  if (segment.source === 'microphone') {
+  let speaker = segment.speaker_label || 'Unknown';
+  if (!segment.speaker_label && segment.source === 'microphone') {
     speaker = 'Me';
-  } else if (segment.source === 'system') {
+  } else if (!segment.speaker_label && segment.source === 'system') {
     speaker = 'Them';
   }
 

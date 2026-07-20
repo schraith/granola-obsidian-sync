@@ -1,9 +1,8 @@
 # Granola to Obsidian Sync
 
-Simple tool for syncing Granola meeting notes to an Obsidian vault. Fetches past meetings with panels and transcripts from the Granola API and creates organized Markdown files with YAML frontmatter in a configurable Obsidian subdirectory.
+Simple tool for syncing Granola meeting notes to an Obsidian vault. It uses Granola's supported public API when `GRANOLA_API_KEY` is configured, and retains the local desktop-session integration as a legacy fallback.
 
-**Important Notes:** 
-- Granola does not have a public API. This project uses the private Granola MacOS app API which is subject to frequent breaking changes. When a public API is available this project will be updated to use it.
+The public API requires a Granola Business or Enterprise plan. Create a personal API key with personal-note access in **Granola → Settings → Connectors → API keys**.
 
 ## Features
 
@@ -40,11 +39,13 @@ cp .env.example .env
 Edit `.env` with required settings:
 
 ### Required
-- `GRANOLA_AUTH_PATH`: Path to Granola's supabase.json auth file (default: `~/Library/Application Support/Granola/supabase.json`)
-- `OBSIDIAN_VAULT_MEETINGS_PATH`: Absolute path to meetings directory in your Obsidian vault
+- `GRANOLA_API_KEY`: Supported public API key. Recommended for reliable scheduled syncs. If omitted, `GRANOLA_AUTH_PATH` is required for the legacy fallback.
+- `OBSIDIAN_VAULT_ROOT_PATH`: Absolute path to the Obsidian vault root.
+- `OBSIDIAN_VAULT_MEETINGS_PATH`: Meetings directory relative to the vault root.
 
 ### Optional
 - `GRANOLA_MEETINGS_LIMIT`: Number of meetings to fetch from API (default: 50)
+- `GRANOLA_AUTH_PATH`: Legacy local-session fallback, ignored when `GRANOLA_API_KEY` is set.
 - `OWNER_EMAILS`: Comma-separated email(s) to identify which speaker is "Me" in transcripts
 - `SYNC_TRANSCRIPT`: Include meeting transcript in Obsidian notes (default: false)
 - `TRANSCRIPT_TITLE_FILTER`: Only sync transcripts for meetings with these title keywords (comma-separated, case-insensitive). Example: `"1:1,sync,review"`. Leave blank to use `SYNC_TRANSCRIPT` setting for all meetings
@@ -116,9 +117,9 @@ Add to crontab with `crontab -e`:
 ## How It Works
 
 1. **Index Vault**: Scans existing meeting files to build index for deduplication
-2. **Authentication**: Reads auth token from Granola app support directory
-3. **Fetch Meetings**: Gets processed meetings from Granola API (configurable limit)
-4. **Panel Validation**: Only processes meetings that have panels (structured content)
+2. **Authentication**: Uses `GRANOLA_API_KEY`, falling back to the local Granola session only when no key is configured
+3. **Fetch Meetings**: Paginates the public API and fetches note summaries and transcripts (configurable limit)
+4. **Summary Validation**: Only processes meetings with generated Granola summaries
 5. **Content Processing**: 
    - Processes transcripts with speaker identification and deduplication
    - Processes panels with template-specific sorting

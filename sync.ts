@@ -28,6 +28,12 @@ import {
   shouldSkipPastMeeting,
 } from "./transcript-processor";
 import { processPanels } from "./panel-processor";
+import {
+  GranolaPublicApiClient,
+  GranolaPublicApiError,
+  type GranolaApiNote,
+  type GranolaApiTranscriptItem,
+} from "./granola-public-api";
 import { networkInterfaces } from "os";
 
 const execFileAsync = promisify(execFile);
@@ -36,7 +42,7 @@ const execFileAsync = promisify(execFile);
 // All user-configurable values are sourced from environment variables.
 // See .env.example for details.
 
-const requiredEnvVars = ["GRANOLA_AUTH_PATH", "OBSIDIAN_VAULT_ROOT_PATH", "OBSIDIAN_VAULT_MEETINGS_PATH"];
+const requiredEnvVars = ["OBSIDIAN_VAULT_ROOT_PATH", "OBSIDIAN_VAULT_MEETINGS_PATH"];
 
 // Helper to resolve tilde (~) in paths
 const resolvePath = (p: string) =>
@@ -51,8 +57,20 @@ for (const varName of requiredEnvVars) {
   }
 }
 
+if (!process.env.GRANOLA_API_KEY && !process.env.GRANOLA_AUTH_PATH) {
+  throw new Error(
+    "Missing Granola authentication. Set GRANOLA_API_KEY for the supported public API, or GRANOLA_AUTH_PATH for the legacy local-session fallback.",
+  );
+}
+
 const config = {
-  granolaAuthPath: resolvePath(process.env.GRANOLA_AUTH_PATH!),
+  granolaApiKey: process.env.GRANOLA_API_KEY?.trim(),
+  granolaPublicApiBaseUrl:
+    process.env.GRANOLA_PUBLIC_API_BASE_URL?.trim() ||
+    "https://public-api.granola.ai/v1",
+  granolaAuthPath: process.env.GRANOLA_AUTH_PATH
+    ? resolvePath(process.env.GRANOLA_AUTH_PATH)
+    : "",
   obsidianVaultRoot: resolvePath(process.env.OBSIDIAN_VAULT_ROOT_PATH!),
   obsidianVaultMeetingsPath: process.env.OBSIDIAN_VAULT_MEETINGS_PATH!,
   meetingsLimit: parseInt(process.env.GRANOLA_MEETINGS_LIMIT || "50"),
@@ -764,6 +782,7 @@ interface GranolaDoc {
   title: string;
   created_at: string;
   workspace?: { name: string };
+  publicApiNoteId?: string;
 }
 
 interface DocMetadata {
@@ -779,6 +798,97 @@ interface Panel {
   original_content: string;
   created_at: string;
   updated_at: string;
+}
+
+interface PublicApiMeetingBatch {
+  meetings: GranolaDoc[];
+  notesByMeetingId: Map<string, GranolaApiNote>;
+}
+
+function getStableMeetingId(note: GranolaApiNote): string {
+  try {
+    const match = new URL(note.web_url).pathname.match(/\/d\/([^/]+)/);
+    if (match?.[1]) return decodeURIComponent(match[1]);
+  } catch {
+    // Fall back to the public API note ID when web_url is malformed or absent.
+  }
+  return note.id;
+}
+
+function normalizePublicApiTranscript(
+  transcript: GranolaApiTranscriptItem[] | null,
+): Array<{
+  text: string;
+  source: string;
+  start_timestamp?: string;
+  end_timestamp?: string;
+  speaker_label?: string;
+}> {
+  return (transcript || []).map((item) => ({
+    text: item.text,
+    // The private API called non-microphone audio "system"; the public API
+    // calls it "speaker". Preserve the existing Me/Them formatting.
+    source: item.speaker?.source === "speaker"
+      ? "system"
+      : item.speaker?.source || "",
+    start_timestamp: item.start_time,
+    end_timestamp: item.end_time,
+    speaker_label: item.speaker?.diarization_label,
+  }));
+}
+
+function publicApiNoteToMetadata(note: GranolaApiNote): DocMetadata {
+  return {
+    attendees: (note.attendees || []).map((attendee) => ({
+      name: attendee.name || "",
+      email: attendee.email,
+    })),
+    creator: {
+      name: note.owner.name || "",
+      email: note.owner.email,
+    },
+  };
+}
+
+async function fetchPublicApiMeetingBatch(
+  apiKey: string,
+  limit: number,
+  forceId?: string,
+): Promise<PublicApiMeetingBatch> {
+  const client = new GranolaPublicApiClient({
+    apiKey,
+    baseUrl: config.granolaPublicApiBaseUrl,
+  });
+
+  const notes = forceId?.startsWith("not_")
+    ? [await client.getNote(forceId)]
+    : await client.listNotes(limit);
+  const detailedNotes: GranolaApiNote[] = [];
+
+  for (const note of notes) {
+    const detail = "summary_markdown" in note
+      ? note as GranolaApiNote
+      : await client.getNote(note.id);
+    detailedNotes.push(detail);
+  }
+
+  const notesByMeetingId = new Map<string, GranolaApiNote>();
+  const meetings = detailedNotes.map((note) => {
+    const id = getStableMeetingId(note);
+    notesByMeetingId.set(id, note);
+    return {
+      id,
+      publicApiNoteId: note.id,
+      title: ensureTitle(note.title || note.calendar_event?.event_title),
+      created_at:
+        note.calendar_event?.scheduled_start_time || note.created_at,
+      workspace: note.folder_membership?.[0]
+        ? { name: note.folder_membership[0].name }
+        : undefined,
+    };
+  });
+
+  return { meetings, notesByMeetingId };
 }
 
 // UNIFIED MEETING DATA
@@ -1653,10 +1763,14 @@ async function main(): Promise<void> {
 
   // 2. GET AUTH TOKEN
   console.log("\n🔑 Loading auth token...");
-  let token: string | undefined;
+  let token: string | undefined = config.granolaApiKey;
 
-  // Try stored-accounts.json first (new Granola format, supports auto-refresh)
-  token = await getTokenFromStoredAccounts();
+  if (token) {
+    console.log("   Using supported Granola public API key");
+  } else {
+    // Try stored-accounts.json first (legacy private API fallback).
+    token = await getTokenFromStoredAccounts();
+  }
 
   // Fall back to legacy supabase.json / GRANOLA_AUTH_PATH. A missing or
   // unreadable legacy file is not fatal here — we fall through to the
@@ -1711,57 +1825,87 @@ async function main(): Promise<void> {
 
   // 3. FETCH PAST/PROCESSED MEETINGS FROM API
   console.log("\n📥 Fetching processed meetings from API..." + (isForceMode && forceDocumentId ? ` (force mode for ${forceDocumentId})` : ""));
-  const docsResponse = await fetchWithTimeout(
-    `${API_BASE}/get-documents`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        ...GRANOLA_API_HEADERS,
+  let allMeetings: GranolaDoc[];
+  let publicNotesByMeetingId = new Map<string, GranolaApiNote>();
+
+  if (config.granolaApiKey) {
+    try {
+      const batch = await fetchPublicApiMeetingBatch(
+        config.granolaApiKey,
+        config.meetingsLimit,
+        forceDocumentId,
+      );
+      allMeetings = batch.meetings;
+      publicNotesByMeetingId = batch.notesByMeetingId;
+    } catch (error) {
+      if (error instanceof GranolaPublicApiError && error.status === 401) {
+        throw await notifyAndThrow(
+          "Granola Sync FAILED — API key rejected",
+          "Granola public API rejected GRANOLA_API_KEY (401 Unauthorized). Create or replace the key in Granola Settings → Connectors → API keys.",
+        );
+      }
+      if (error instanceof GranolaPublicApiError && error.status === 403) {
+        throw await notifyAndThrow(
+          "Granola Sync FAILED — API access denied",
+          "Granola public API denied access (403 Forbidden). Verify the key's personal/public note scopes and workspace API settings.",
+        );
+      }
+      throw error;
+    }
+  } else {
+    const docsResponse = await fetchWithTimeout(
+      `${API_BASE}/get-documents`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          ...GRANOLA_API_HEADERS,
+        },
+        body: JSON.stringify({ limit: config.meetingsLimit }),
+        timeout: 30000,
       },
-      body: JSON.stringify({ limit: config.meetingsLimit }),
-      timeout: 30000,
-    },
-    "get-documents",
-  );
+      "get-documents",
+    );
 
-  if (!docsResponse.ok) {
-    if (docsResponse.status === 401) {
+    if (!docsResponse.ok) {
+      if (docsResponse.status === 401) {
+        await notifyAndThrow(
+          "Granola Sync FAILED — re-login needed",
+          `Granola API rejected the token (401 Unauthorized). The session has likely ended. ${RELOGIN_HINT}`,
+        );
+      }
       await notifyAndThrow(
-        "Granola Sync FAILED — re-login needed",
-        `Granola API rejected the token (401 Unauthorized). The session has likely ended. ${RELOGIN_HINT}`,
+        "Granola Sync FAILED",
+        `Docs API failed: ${docsResponse.status} ${docsResponse.statusText}`,
       );
     }
-    await notifyAndThrow(
-      "Granola Sync FAILED",
-      `Docs API failed: ${docsResponse.status} ${docsResponse.statusText}`,
-    );
-  }
 
-  const docsBody: unknown = await docsResponse.json();
+    const docsBody: unknown = await docsResponse.json();
 
-  // The API answers a stale X-Client-Version with {"message":"Unsupported client"}
-  // at HTTP 200, which would otherwise crash later as "{} is not iterable".
-  if (!Array.isArray(docsBody)) {
-    const message = (docsBody as any)?.message;
-    if (message === "Unsupported client") {
+    // The private API answers a stale X-Client-Version with an error at HTTP 200.
+    if (!Array.isArray(docsBody)) {
+      const message = (docsBody as any)?.message;
+      if (message === "Unsupported client") {
+        await notifyAndThrow(
+          "Granola Sync FAILED — update Granola",
+          `Granola API rejected client version ${GRANOLA_CLIENT_VERSION} as "Unsupported client". Fix: update the Granola desktop app (the sync reads its version automatically), then re-run \`bun sync.ts\`.`,
+        );
+      }
       await notifyAndThrow(
-        "Granola Sync FAILED — update Granola",
-        `Granola API rejected client version ${GRANOLA_CLIENT_VERSION} as "Unsupported client". Fix: update the Granola desktop app (the sync reads its version automatically), then re-run \`bun sync.ts\`.`,
+        "Granola Sync FAILED",
+        `Docs API returned an unexpected non-array response: ${JSON.stringify(docsBody).slice(0, 200)}`,
       );
     }
-    await notifyAndThrow(
-      "Granola Sync FAILED",
-      `Docs API returned an unexpected non-array response: ${JSON.stringify(docsBody).slice(0, 200)}`,
-    );
-  }
 
-  const allMeetings: GranolaDoc[] = docsBody as GranolaDoc[];
+    allMeetings = docsBody as GranolaDoc[];
+  }
   console.log(`   Found ${allMeetings.length} processed meetings`);
 
   const meetings = isForceMode && forceDocumentId
-    ? allMeetings.filter((m) => m.id === forceDocumentId)
+    ? allMeetings.filter(
+      (m) => m.id === forceDocumentId || m.publicApiNoteId === forceDocumentId,
+    )
     : allMeetings;
 
   if (isForceMode && forceDocumentId && meetings.length === 0) {
@@ -1772,7 +1916,9 @@ async function main(): Promise<void> {
 
   // API should ALWAYS return past meetings
   if (meetings.length === 0) {
-    const error = "API returned 0 meetings - API is likely broken";
+    const error = config.granolaApiKey
+      ? "Granola public API returned 0 accessible meetings. Verify the API key scopes and confirm the account has summarized notes."
+      : "API returned 0 meetings - API is likely broken";
     sendPushover("Granola Sync FAILED", error);
     await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for Pushover
     throw new Error(error);
@@ -1840,88 +1986,90 @@ async function main(): Promise<void> {
     // Note: 1:1 and recurring meetings will proceed even if they exist as ad-hoc,
     // and they'll be added to the correct 1:1/recurring file via handleOneOnOneMeeting/handleRecurringMeeting
 
-    // Check if meeting has panels (required for sync)
     let panels: Panel[] = [];
-    try {
-      if (config.debug)
-        console.log(`    Fetching panels for: ${ensureTitle(meeting.title)}`);
-      panels = await getPanels(meeting.id, token);
-    } catch (error) {
-      console.log(
-        `⚠️  Failed to fetch panels for ${ensureTitle(meeting.title)} - skipping`,
-      );
-      continue;
-    }
+    let metadata: DocMetadata;
+    let transcriptData: any;
+    let panelContent = "";
+    const publicNote = publicNotesByMeetingId.get(meeting.id);
 
-    if (!panels || panels.length === 0) {
-      if (config.debug)
-        console.log(`⏳ No panels yet: ${ensureTitle(meeting.title)}`);
-      continue;
-    }
+    if (publicNote) {
+      metadata = publicApiNoteToMetadata(publicNote);
+      transcriptData = normalizePublicApiTranscript(publicNote.transcript);
+      panelContent = publicNote.summary_markdown || publicNote.summary_text || "";
 
-    // Ensure summarization has completed: require at least one non-empty panel
-    // Granola's API does not expose an explicit "done" flag; in practice, panels
-    // are only created once summarization has run. We therefore treat any
-    // non-empty panel as evidence the summary is ready.
-    const summaryPanelReady = panels.some(
-      (p) =>
-        typeof p.original_content === "string" &&
-        p.original_content.trim().length > 0,
-    );
-
-    if (!summaryPanelReady) {
-      if (config.debug)
+      if (!panelContent.trim()) {
+        if (config.debug) {
+          console.log(`⏳ Summary not ready yet: ${ensureTitle(meeting.title)}`);
+        }
+        continue;
+      }
+    } else {
+      // Legacy private API: panels are the signal that summarization completed.
+      try {
+        if (config.debug)
+          console.log(`    Fetching panels for: ${ensureTitle(meeting.title)}`);
+        panels = await getPanels(meeting.id, token);
+      } catch (error) {
         console.log(
-          `⏳ Summary panel not ready yet: ${ensureTitle(meeting.title)}`,
+          `⚠️  Failed to fetch panels for ${ensureTitle(meeting.title)} - skipping`,
         );
-      continue;
-    }
+        continue;
+      }
 
-    // Fetch metadata and transcript (used for attendee info and transcript content)
-    if (config.debug)
-      console.log(
-        `    Fetching metadata & transcript for: ${ensureTitle(meeting.title)}`,
+      const summaryPanelReady = panels.some(
+        (p) =>
+          typeof p.original_content === "string" &&
+          p.original_content.trim().length > 0,
       );
-    const [metaResponse, transcriptResponse] = await Promise.all([
-      fetchWithTimeout(
-        `${API_BASE}/get-document-metadata`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-            ...GRANOLA_API_HEADERS,
-          },
-          body: JSON.stringify({ document_id: meeting.id }),
-          timeout: 30000,
-        },
-        "get-document-metadata",
-      ),
-      fetchWithTimeout(
-        `${API_BASE}/get-document-transcript`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-            ...GRANOLA_API_HEADERS,
-          },
-          body: JSON.stringify({ document_id: meeting.id }),
-          timeout: 30000,
-        },
-        "get-document-transcript",
-      ),
-    ]);
+      if (!summaryPanelReady) {
+        if (config.debug)
+          console.log(`⏳ Summary panel not ready yet: ${ensureTitle(meeting.title)}`);
+        continue;
+      }
 
-    if (!metaResponse.ok || !transcriptResponse.ok) {
-      const error = `Failed to fetch data for ${ensureTitle(meeting.title)} - skipping`;
-      console.error(error);
-      sendPushover("Granola Sync Warning", error);
-      continue;
+      if (config.debug)
+        console.log(`    Fetching metadata & transcript for: ${ensureTitle(meeting.title)}`);
+      const [metaResponse, transcriptResponse] = await Promise.all([
+        fetchWithTimeout(
+          `${API_BASE}/get-document-metadata`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              ...GRANOLA_API_HEADERS,
+            },
+            body: JSON.stringify({ document_id: meeting.id }),
+            timeout: 30000,
+          },
+          "get-document-metadata",
+        ),
+        fetchWithTimeout(
+          `${API_BASE}/get-document-transcript`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              ...GRANOLA_API_HEADERS,
+            },
+            body: JSON.stringify({ document_id: meeting.id }),
+            timeout: 30000,
+          },
+          "get-document-transcript",
+        ),
+      ]);
+
+      if (!metaResponse.ok || !transcriptResponse.ok) {
+        const error = `Failed to fetch data for ${ensureTitle(meeting.title)} - skipping`;
+        console.error(error);
+        sendPushover("Granola Sync Warning", error);
+        continue;
+      }
+
+      metadata = await metaResponse.json();
+      transcriptData = await transcriptResponse.json();
     }
-
-    const metadata: DocMetadata = await metaResponse.json();
-    const transcriptData = await transcriptResponse.json();
 
     // Filter out solo/empty meetings
     const processedTranscript = processTranscript(transcriptData);
@@ -1981,10 +2129,9 @@ async function main(): Promise<void> {
       }
     }
 
-    // Panel processing using already fetched panels
-    let panelContent = "";
+    // Legacy panel processing. Public API summaries are already Markdown.
     try {
-      if (panels && panels.length > 0) {
+      if (!publicNote && panels.length > 0) {
         // Sort panels: specified template first
         const sortedPanels = panels.sort(
           (a, b) =>
@@ -2006,6 +2153,9 @@ async function main(): Promise<void> {
       id: meeting.id,
       title: ensureTitle(meeting.title),
       startTime: new Date(meeting.created_at),
+      endTime: publicNote?.calendar_event?.scheduled_end_time
+        ? new Date(publicNote.calendar_event.scheduled_end_time)
+        : undefined,
       attendees:
         metadata.attendees?.map(normalizeAttendee).filter(Boolean) || [],
       organizer: metadata.creator?.name || "",
@@ -2013,6 +2163,7 @@ async function main(): Promise<void> {
       status: "filed",
       transcript: finalTranscript,
       panelContent: panelContent,
+      meetingUrl: publicNote?.web_url,
     };
 
     // category was determined earlier and may have been refined using metadata

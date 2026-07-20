@@ -11,12 +11,13 @@ const turndownService = new TurndownService({
 // Add rule for list items with checkboxes (must be before default li rule)
 turndownService.addRule('checklistItem', {
   filter(node) {
-    if (node.name !== 'li') return false;
-    const input = node.children?.find((child: any) => child.name === 'input' && child.attribs?.type === 'checkbox');
+    const element = node as any;
+    if (element.name !== 'li') return false;
+    const input = element.children?.find((child: any) => child.name === 'input' && child.attribs?.type === 'checkbox');
     return !!input;
   },
   replacement(content, node) {
-    const input = node.children?.find((child: any) => child.name === 'input' && child.attribs?.type === 'checkbox') as any;
+    const input = (node as any).children?.find((child: any) => child.name === 'input' && child.attribs?.type === 'checkbox') as any;
     const checked = input?.attribs?.checked !== undefined ? '[x]' : '[ ]';
     // Remove the checkbox input from content and clean up
     const text = content
@@ -30,7 +31,8 @@ turndownService.addRule('checklistItem', {
 // Add rule for checkboxes to prevent them from being rendered as text
 turndownService.addRule('checkbox', {
   filter(node) {
-    return node.name === 'input' && node.attribs?.type === 'checkbox';
+    const element = node as any;
+    return element.name === 'input' && element.attribs?.type === 'checkbox';
   },
   replacement() {
     return '';

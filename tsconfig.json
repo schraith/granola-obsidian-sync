@@ -9,5 +9,6 @@
     "forceConsistentCasingInFileNames": true,
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": ["__tests__"]
 }

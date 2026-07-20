@@ -36,7 +36,15 @@ All paths and tokens are configured via environment variables in `.env`:
 - `/temp/`: All debug scripts, test files, and temporary utilities go here (git-tracked directory, all files inside are git-ignored except .gitkeep)
 - `/logs/`: Sync operation logs (if logging is enabled)
 
-## Auth Token Resolution
+## Authentication
+
+### Supported public API (preferred)
+
+When `GRANOLA_API_KEY` is set, the sync uses `https://public-api.granola.ai/v1` and does not read Granola desktop credentials. It cursor-paginates `GET /notes` in pages of up to 30, then calls `GET /notes/{note_id}?include=transcript` for each selected note. Requests are paced below the documented sustained limit and retry HTTP 429 responses.
+
+Public note IDs (`not_...`) differ from the historical document UUIDs stored in Obsidian frontmatter. The sync extracts the document UUID from each note's `web_url` so existing notes remain deduplicated after migration.
+
+### Legacy local-session fallback
 
 As of May 2026, Granola migrated to an encrypted token store and also requires client-identification headers on every API call. The sync handles both:
 
