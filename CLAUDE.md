@@ -17,19 +17,8 @@ bun sync.ts
 
 ## Architecture
 
-### Two-File Design
-- **sync.ts**: Orchestrates the sync - fetches data, writes files
-- **transcript-processor.ts**: Processes transcripts - adds speaker labels (Me/Them), removes duplicates, groups by speaker
-- Configuration via environment variables (see `.env.example`)
 - Crashes immediately on any error (no retry logic)
 - Skips existing files (no overwrite logic)
-
-### Configuration
-All paths and tokens are configured via environment variables in `.env`:
-- **GRANOLA_AUTH_PATH**: Path to Granola's legacy `supabase.json` auth file (fallback only — see Auth below)
-- **OBSIDIAN_VAULT_MEETINGS_PATH**: Where meeting notes are saved in Obsidian
-- **PUSHOVER_USER_KEY** & **PUSHOVER_API_TOKEN**: Optional error notifications
-- **API Base**: `https://api.granola.ai/v1` (hardcoded as it's unlikely to change)
 
 ### File Organization
 - Main directory: Keep clean with only essential files
@@ -58,50 +47,17 @@ Without these headers the API returns `{"message":"Unsupported client"}` (HTTP 2
 ### Token resolution order
 `getTokenFromStoredAccounts()` tries sources in mtime order and **falls through to the next source if one yields no usable token** (not just on read/decrypt failure). This matters because newer Granola app versions (7.277.x) can write an empty `{"accounts":"[]"}` to `stored-accounts.json.enc` even while a valid account still lives in the plaintext file — returning early on the empty `.enc` would discard a working token. Sources, in preference order:
 
-1. **`stored-accounts.json.enc`** (primary) — encrypted file kept up-to-date by the running Granola Electron app. Decryption chain:
-   - Read `Granola Safe Storage` password from macOS Keychain via `security find-generic-password -s "Granola Safe Storage" -w`
-   - Decrypt `storage.dek` (Chrome v10 format: `v10` prefix + AES-128-CBC, key = PBKDF2-HMAC-SHA1(keychain_pwd, salt=`saltysalt`, iter=1003, keylen=16), IV = 16 space chars)
-   - Decrypt `stored-accounts.json.enc` with the DEK (AES-256-GCM, format: `IV[12] || ciphertext || tag[16]`)
+1. **`stored-accounts.json.enc`** (primary) — encrypted file kept up-to-date by the running Granola Electron app; decrypted with a DEK derived from the macOS Keychain (full decryption chain in `sync.ts`)
 2. **`stored-accounts.json`** (plaintext fallback) — written by the app on login; may be stale between logins
 3. **`supabase.json` / `GRANOLA_AUTH_PATH`** (legacy fallback) — old auth format from before WorkOS migration
 
-If the access token from any source is expired (within 60 s of `exp`), `refreshWorkosToken()` exchanges the `refresh_token` via the WorkOS `/user_management/authenticate` endpoint (client ID: `client_01JZJ0XBDAT8PHJWQY09Y0VD61`) and saves the new tokens to the plaintext `stored-accounts.json` for the next run.
+If the access token from any source is expired (within 60 s of `exp`), `refreshWorkosToken()` exchanges the `refresh_token` via the WorkOS `/user_management/authenticate` endpoint and saves the new tokens to the plaintext `stored-accounts.json` for the next run.
 
 ### Client version
 `X-Client-Version` is read **dynamically** at startup from the installed app's `Info.plist` (`getGranolaClientVersion()`), falling back to `GRANOLA_CLIENT_VERSION_FALLBACK` only if the app/plist can't be read. A stale version makes the API answer `{"message":"Unsupported client"}` at HTTP 200, which the sync now detects and reports explicitly. Keeping Granola updated keeps this header correct automatically — no manual bump needed.
 
-## Recovery (when the sync fails on auth)
-
-The sync fails loud with an **actionable Pushover/log message** that names the remedy. Map the symptom to the fix:
-
-| Symptom (log / Pushover) | Cause | Fix |
-| --- | --- | --- |
-| `401 Unauthorized` or `session has ended (refresh token rejected)` | WorkOS session ended; no usable token in any store | **Sign out and back in to the Granola desktop app**, then re-run `bun sync.ts`. A fresh login rewrites `stored-accounts.json.enc` with a live `refresh_token`. |
-| `"Unsupported client"` | `X-Client-Version` is stale (rare, since it's read dynamically) | **Update the Granola desktop app**, then re-run. |
-| `No usable Granola auth token found in any store` | All stores empty/unreadable | Confirm Granola is installed and logged in, then re-run. |
-
-Diagnostic commands:
-```bash
-# Are the token files fresh and non-empty? (tiny .enc ≈ empty accounts)
-ls -lat ~/Library/Application\ Support/Granola/stored-accounts.json*
-# Installed app version (compared against the dynamic X-Client-Version)
-defaults read /Applications/Granola.app/Contents/Info.plist CFBundleShortVersionString
-```
-
-If re-login no longer repopulates `stored-accounts.json[.enc]` at all, Granola has moved the token store again (it now also keeps a copy in the SQLCipher-encrypted `granola.db`) — that requires a code change to the resolution chain, not a runbook step.
-
-## Sync Behavior
-
-1. Reads auth token using the resolution chain above
-2. Fetches past meetings from Granola API (configurable limit, default 50)
-3. For each meeting with transcript:
-   - Skips solo meetings and meetings without transcripts
-   - Creates year/month folder structure in Obsidian vault
-   - Generates filename: `YYYY-MM-DD HH-MM {title} -- {id}.md`
-   - Skips if file already exists
-   - **Processes transcript**: Adds speaker labels (Me/Them), removes duplicates, groups text by speaker
-   - Creates Markdown with YAML frontmatter (status: filed)
-   - Writes to Obsidian vault
+### Recovery when auth fails
+When the sync exits on an auth error, invoke the `granola-auth-recovery` skill for the symptom-to-fix table and diagnostic commands.
 
 ## Failure Behavior 
 
@@ -117,33 +73,11 @@ The sync can be scheduled via:
 - **Linux**: cron (see README for example)
 - Both methods call bun directly with proper PATH configuration
 
-## API Endpoints Used
-
-All requests require `X-Client-Version` and `X-Granola-Platform` headers (see Auth above).
-
-- `POST /v1/get-documents` - Fetch meeting list
-- `POST /v1/get-document-metadata` - Get meeting metadata
-- `POST /v1/get-document-transcript` - Get meeting transcript
-- `POST /v1/get-document-panels` - Get meeting panel summaries
-
 ## Development Notes
 
 - Uses Bun runtime (not Node.js)
 - TypeScript with `.ts` extension imports allowed
-- Dependencies: `gray-matter` (YAML frontmatter), `dotenv` (env vars)
-- No build step - runs directly with `bun`
 
 ## Documentation
 
 - `/docs/recommendations.md` - Prioritized improvements and bug fixes with implementation dates
-- `CLAUDE.md` - This file, guidance for Claude Code (claude.ai/code)
-- `GEMINI.md` - Guidance for Gemini CLI
-- `AGENTS.md` - Guidance for OpenAI Codex CLI
-
-## Setup for New Users
-
-1. Clone repo
-2. `bun install`
-3. `cp .env.example .env`
-4. Edit `.env` with your paths
-5. `bun sync.ts`
