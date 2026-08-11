@@ -1214,11 +1214,16 @@ async function processSingleMeeting(): Promise<void> {
   try {
     // Fire and forget - don't wait for completion
     const { spawn } = await import("child_process");
-    spawn("/opt/homebrew/bin/bash", [config.vaultOpsScriptPath], {
+    // Resolve the interpreter rather than hardcoding it: /opt/homebrew/bin/bash is
+    // absent on this machine (only /bin/bash exists), so a hardcoded path meant the
+    // hook silently failed to launch on every sync.
+    const shell = [process.env.VAULT_OPS_SHELL, "/opt/homebrew/bin/bash", "/bin/bash"]
+      .find((p): p is string => !!p && existsSync(p)) ?? "/bin/sh";
+    spawn(shell, [config.vaultOpsScriptPath], {
       detached: true,
       stdio: "ignore",
     }).unref();
-    console.log(`✅ External script launched (fire and forget)`);
+    console.log(`✅ External script launched via ${shell} (fire and forget)`);
   } catch (error: any) {
     console.error(`❌ Failed to launch external script: ${error.message}`);
     // Don't throw - this shouldn't fail the sync
