@@ -9,6 +9,7 @@ The public API requires a Granola Business or Enterprise plan. Create a personal
 - **Panel-Required Sync**: Only syncs meetings that have panels (Granola's structured content) to ensure that meeting is over & Granola AI has summarized meeting 
 - **Transcript Processing**: Adds speaker labels (Me/Them), removes duplicates, groups by speaker (raw transcripts from Granola do not have this)
 - **Selective Transcript Sync**: Filter which meetings get transcripts based on title keywords
+- **Name Normalization**: Corrects Granola's recurring transcription errors on teammate and product names at ingest, with context gates for ambiguous ones
 - **Deduplication**: Automatically updates scheduled meetings when they become filed meetings
 - **Vault Indexing**: Scans existing meetings to prevent duplicates and enable smart matching
 - **External Processing**: Optional integration with external scripts for further automation
@@ -123,6 +124,7 @@ Add to crontab with `crontab -e`:
 5. **Content Processing**: 
    - Processes transcripts with speaker identification and deduplication
    - Processes panels with template-specific sorting
+   - Normalizes known name/term misspellings (see `name-corrections.json`)
 6. **File Organization**: Creates year/month/day folder structure in Obsidian vault
 7. **Smart Filename**: `YYYY-MM-DD HHhMM {title}.md` (Pacific timezone, filesystem-safe)
 8. **Deduplication**: Updates existing scheduled meetings when they become filed
@@ -134,6 +136,8 @@ Add to crontab with `crontab -e`:
 sync.ts                 # Main sync orchestration
 transcript-processor.ts # Transcript processing and speaker identification
 panel-processor.ts      # Panel content processing
+name-normalizer.ts      # Transcription name/term corrections (+ vault backfill CLI)
+name-corrections.json   # Correction table (data only)
 .env                   # Configuration (not tracked)
 .env.example          # Configuration template
 CLAUDE.md             # Primary guidance for Claude Code (claude.ai/code)
@@ -145,6 +149,29 @@ temp/                 # temporary files (git ignored)
 ```
 
 > **Note**: This project is developed primarily with Claude Code, but includes documentation for Gemini and Codex CLI tools for those who prefer alternative assistants or wish to fork the repository.
+
+## Name Normalization
+
+Granola transcribes some names the same wrong way every time (`Chivi` for Shivi, `Pritham` for Pritam, `Christian` for Krishan). Granola's own **Settings → Preferences → Language → Internal Jargon** box only *boosts* recognition — it cannot guarantee a replacement and does nothing for already-synced notes — so the sync fixes these deterministically at ingest.
+
+Corrections live in [`name-corrections.json`](name-corrections.json). Each entry maps `from` variants to a canonical `to`, matched case-insensitively on word boundaries. Text inside URLs, hostnames, email addresses, code spans, `[[wikilinks]]` and markdown link targets is never rewritten.
+
+Two fields handle ambiguous variants:
+
+- `requireContext` — apply only when the note also mentions one of these strings. `Christian` becomes `Krishan` in a note that also mentions Kashish or InstantSys, and is left alone in notes about Valley Christian.
+- `except` — literal phrases that are never rewritten, even when the gate passes.
+
+A bare `Chris` is deliberately **not** mapped: Granola renders both Kris Smith and Krishan Yadav that way, so the token is genuinely ambiguous.
+
+Meeting titles are not normalized — they drive filenames and rename detection.
+
+### Backfilling existing notes
+
+```bash
+bun name-normalizer.ts             # dry run: per-file and total counts, writes nothing
+bun name-normalizer.ts --samples   # same, with one changed line per file
+bun name-normalizer.ts --apply     # rewrite the notes (frontmatter passed through byte-for-byte)
+```
 
 ## Sync Behavior
 

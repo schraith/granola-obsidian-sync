@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a simple tool for syncing Granola meeting notes to Obsidian. It fetches past meetings with transcripts from the Granola API and creates organized Markdown files in your Obsidian vault. The sync logic is split into two focused files: `sync.ts` for orchestration and `transcript-processor.ts` for transcript processing. Maintains zero abstractions, no retry logic, and fail-loud behavior.
+This is a simple tool for syncing Granola meeting notes to Obsidian. It fetches past meetings with transcripts from the Granola API and creates organized Markdown files in your Obsidian vault. The sync logic is split into focused files: `sync.ts` for orchestration, `transcript-processor.ts` for transcript processing, and `name-normalizer.ts` for transcription name fixes. Maintains zero abstractions, no retry logic, and fail-loud behavior.
 
 IMPORTANT! All file and meeting operations occur in 'America/Los_Angeles' (Pacific US) time zone. ALWAYS use this time zone for date operations in this project - never use UTC for any user-visible information, files, folders, or metadata.
 
@@ -19,6 +19,14 @@ bun sync.ts
 
 - Crashes immediately on any error (no retry logic)
 - Skips existing files (no overwrite logic)
+
+### Name Normalization
+`name-normalizer.ts` rewrites Granola's recurring transcription errors in the summary and transcript before the note is written; the table is data in `name-corrections.json`. Two rules matter when editing it:
+
+- Variants that are also legitimate words or other people (`Christian`, `Krishna`) need `requireContext` so they only fire in notes that mention a teammate, plus `except` phrases for known collocations. Attendee frontmatter is often empty, so it can't be used as the gate.
+- A bare `Chris` stays unmapped — Granola renders both Kris Smith and Krishan Yadav that way.
+
+Meeting titles are not normalized; they drive filenames and rename detection. Backfill existing notes with `bun name-normalizer.ts` (dry run) / `--apply`.
 
 ### File Organization
 - Main directory: Keep clean with only essential files

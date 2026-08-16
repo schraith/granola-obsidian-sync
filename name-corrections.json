@@ -1,0 +1,107 @@
+{
+  "_readme": [
+    "Deterministic transcription fixes applied to meeting summaries and transcripts at sync time.",
+    "",
+    "Each entry replaces every 'from' variant with 'to'. Matching is case-insensitive and",
+    "word-boundary anchored; spaces inside a variant match any run of whitespace. Text inside",
+    "URLs, email addresses, code spans, [[wikilinks]] and markdown link targets is never touched.",
+    "",
+    "  requireContext  Apply only when the note also contains one of these strings. Use it for",
+    "                  variants that are legitimate words or other people elsewhere in the vault",
+    "                  (e.g. 'Christian' is Krishan in a FactorLab standup, but a school name in",
+    "                  Leo's football notes).",
+    "  except          Literal phrases that are never rewritten, even when the gate passes.",
+    "  enabled         Set false to keep an entry documented but inactive.",
+    "",
+    "Preview the effect on the existing vault with `bun name-normalizer.ts` (dry run),",
+    "then apply it with `bun name-normalizer.ts --apply`.",
+    "",
+    "Deliberately absent: a bare 'Chris' -> 'Kris' rule. Granola renders both Kris Smith and",
+    "Krishan Yadav as 'Chris', so the token is genuinely ambiguous and is left alone."
+  ],
+  "corrections": [
+    {
+      "to": "Shivi",
+      "from": ["Chivi", "Chibi", "Shibi", "Shivy"]
+    },
+    {
+      "to": "Kavya",
+      "from": ["Tavia", "Kavia", "Kaviya"]
+    },
+    {
+      "to": "Pritam",
+      "from": ["Pritham", "Pratam", "Preetam"]
+    },
+    {
+      "to": "Kashish",
+      "from": ["Kashis", "Kashesh"]
+    },
+    {
+      "to": "Vikas",
+      "from": ["Vikash"]
+    },
+    {
+      "to": "Krishan",
+      "from": ["Christian", "Krishna", "Krishnan", "Kishan", "Chrishan"],
+      "requireContext": [
+        "Krishan",
+        "Kashish",
+        "Kavya",
+        "Anshika",
+        "Parthh",
+        "InstantSys",
+        "Instant Sys",
+        "Shivi",
+        "Chivi",
+        "Pritam",
+        "Tushar",
+        "Itisha",
+        "Hardik",
+        "Sanjay",
+        "Vikas"
+      ],
+      "except": ["Valley Christian", "Wildlife Christian", "Christian Earls"],
+      "note": "Gated: 'Christian' is a school/person name in personal meetings. The gate requires another InstantSys/FactorLab teammate in the same note."
+    },
+    {
+      "to": "Anshika",
+      "from": ["Ansha", "Anshka", "Anshikha"],
+      "requireContext": [
+        "Krishan",
+        "Kashish",
+        "Kavya",
+        "Parthh",
+        "InstantSys",
+        "Instant Sys",
+        "Tushar",
+        "Sanjay",
+        "Vikas"
+      ]
+    },
+    {
+      "to": "FactorLab",
+      "from": ["Factor Lab", "Factorlab", "Factor labs", "FactorLabs"]
+    },
+    {
+      "to": "InstantSys",
+      "from": ["Instant Sys", "Instantsys", "Instasys"]
+    },
+    {
+      "to": "DuploCloud",
+      "from": ["Duplo Cloud", "Duplocloud"]
+    },
+    {
+      "to": "Langfuse",
+      "from": ["Lang Fuse", "Langfuze", "Lang Fuze"]
+    },
+    {
+      "to": "Simple7",
+      "from": ["Simple 7"]
+    },
+    {
+      "to": "Parthh",
+      "from": ["Parth", "Parthhh"],
+      "note": "'Parth' is the common short form but he spells it Parthh, so the vault uses the double-h everywhere."
+    }
+  ]
+}

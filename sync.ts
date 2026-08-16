@@ -28,6 +28,7 @@ import {
   shouldSkipPastMeeting,
 } from "./transcript-processor";
 import { processPanels } from "./panel-processor";
+import { normalizeNamesWithReport } from "./name-normalizer";
 import {
   GranolaPublicApiClient,
   GranolaPublicApiError,
@@ -1463,12 +1464,9 @@ ${data.panelContent || ""}
 async function handleAdHocMeeting(
   data: MeetingData,
 ): Promise<{ success: boolean; action: string; filePath?: string }> {
-  const pacificDateStr = data.startTime.toLocaleDateString("en-CA", {
-    timeZone: "America/Los_Angeles",
-  });
+  const { dateStr: pacificDateStr, timeStr } = formatRoundedDateTime(data.startTime);
 
   const cleanTitle = cleanTitleForFilename(data.title);
-  const timeStr = formatRoundedTime(data.startTime);
 
   const filename = `${pacificDateStr} ${timeStr} - ${cleanTitle}.md`;
   const filePath = join(VAULT_PATH, "Ad-hoc", filename);
@@ -1524,25 +1522,32 @@ ${shouldSyncTranscript(data.title) && data.transcript ? `\n## Transcript\n${data
   return { success: true, action: `Created ad hoc: ${cleanTitle}`, filePath };
 }
 
-// FORMAT TIME ROUNDED TO NEAREST 15 MINUTES IN 24H (e.g. "1915")
-function formatRoundedTime(date: Date): string {
+// FORMAT DATE + TIME ROUNDED TO NEAREST 15 MINUTES, PACIFIC (e.g. "2026-08-10", "19h15")
+//
+// Both parts are derived from the SAME rounded instant. Previously the time was rounded
+// on its own while the date came from the unrounded value, so a meeting at 23:58 rounded
+// to "0h00" but kept its original date — naming the file as midnight at the *start* of
+// that day, ~24h before the meeting actually happened. Anything at/after 23:52:30 hit it.
+function formatRoundedDateTime(date: Date): { dateStr: string; timeStr: string } {
   const tz = { timeZone: "America/Los_Angeles" } as const;
-  let hour = parseInt(date.toLocaleString("en-US", { ...tz, hour: "numeric", hour12: false }));
-  let minute = parseInt(date.toLocaleString("en-US", { ...tz, minute: "numeric" }));
+  const minute = parseInt(date.toLocaleString("en-US", { ...tz, minute: "numeric" }));
 
-  // Round to nearest 15 minutes
+  // Round to nearest 15 minutes by shifting the instant, so any day/month/year
+  // rollover is handled by Date itself rather than by hand.
   const remainder = minute % 15;
-  if (remainder >= 8) {
-    minute += 15 - remainder;
-  } else {
-    minute -= remainder;
-  }
-  if (minute >= 60) {
-    minute = 0;
-    hour = (hour + 1) % 24;
-  }
+  const deltaMinutes = remainder >= 8 ? 15 - remainder : -remainder;
+  const rounded = new Date(date.getTime() + deltaMinutes * 60_000);
 
-  return `${hour}h${minute.toString().padStart(2, "0")}`;
+  // hourCycle h23 keeps midnight as 0 rather than 24, which hour12:false can return.
+  const hour = parseInt(
+    rounded.toLocaleString("en-US", { ...tz, hour: "numeric", hourCycle: "h23" }),
+  );
+  const min = parseInt(rounded.toLocaleString("en-US", { ...tz, minute: "numeric" }));
+
+  return {
+    dateStr: rounded.toLocaleDateString("en-CA", tz),
+    timeStr: `${hour}h${min.toString().padStart(2, "0")}`,
+  };
 }
 
 // CLEAN TITLE FOR FILENAME (shared by ad-hoc creation and rename)
@@ -2153,6 +2158,28 @@ async function main(): Promise<void> {
       // Continue without panels - don't break existing functionality
     }
 
+    // Correct Granola's recurring transcription errors on names and product
+    // terms. Gated corrections are judged against the whole note, so context
+    // in the transcript can unlock a fix in the summary and vice versa.
+    const normalizationContext = `${ensureTitle(meeting.title)}\n${panelContent}\n${processedTranscript}`;
+    const normalizedPanel = normalizeNamesWithReport(panelContent, normalizationContext);
+    const normalizedTranscript = normalizeNamesWithReport(
+      finalTranscript,
+      normalizationContext,
+    );
+    if (config.debug) {
+      const fixes = Object.entries(normalizedPanel.replacements)
+        .concat(Object.entries(normalizedTranscript.replacements))
+        .reduce<Record<string, number>>((acc, [key, count]) => {
+          acc[key] = (acc[key] || 0) + count;
+          return acc;
+        }, {});
+      const summary = Object.entries(fixes)
+        .map(([key, count]) => `${key} (${count})`)
+        .join(", ");
+      if (summary) console.log(`    ✏️  Name fixes: ${summary}`);
+    }
+
     // Normalize data for shared function
     const meetingData: MeetingData = {
       id: meeting.id,
@@ -2166,8 +2193,8 @@ async function main(): Promise<void> {
       organizer: metadata.creator?.name || "",
       location: "",
       status: "filed",
-      transcript: finalTranscript,
-      panelContent: panelContent,
+      transcript: normalizedTranscript.text,
+      panelContent: normalizedPanel.text,
       meetingUrl: publicNote?.web_url,
     };
 
