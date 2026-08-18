@@ -55,6 +55,12 @@ interface ListNotesResponse {
   cursor: string | null;
 }
 
+interface TranscriptPageResponse {
+  transcript: GranolaApiTranscriptItem[];
+  hasMore: boolean;
+  cursor: string | null;
+}
+
 export interface GranolaPublicApiClientOptions {
   apiKey: string;
   baseUrl?: string;
@@ -132,7 +138,42 @@ export class GranolaPublicApiClient {
 
     const url = new URL(`${this.baseUrl}/notes/${encodeURIComponent(noteId)}`);
     if (includeTranscript) url.searchParams.set("include", "transcript");
-    return this.requestJson<GranolaApiNote>(url);
+
+    if (!includeTranscript) {
+      return this.requestJson<GranolaApiNote>(url);
+    }
+
+    try {
+      return await this.requestJson<GranolaApiNote>(url);
+    } catch (error) {
+      if (error instanceof GranolaPublicApiError && error.status === 413) {
+        // Transcript too large to return inline — fetch it page by page.
+        const urlNoTranscript = new URL(`${this.baseUrl}/notes/${encodeURIComponent(noteId)}`);
+        const note = await this.requestJson<GranolaApiNote>(urlNoTranscript);
+        note.transcript = await this.getTranscript(noteId);
+        return note;
+      }
+      throw error;
+    }
+  }
+
+  /** Fetch all transcript items for a note using the paginated transcript endpoint. */
+  async getTranscript(noteId: string): Promise<GranolaApiTranscriptItem[]> {
+    const allItems: GranolaApiTranscriptItem[] = [];
+    let cursor: string | null = null;
+
+    do {
+      const url = new URL(`${this.baseUrl}/notes/${encodeURIComponent(noteId)}/transcript`);
+      if (cursor) url.searchParams.set("cursor", cursor);
+
+      const page = await this.requestJson<TranscriptPageResponse>(url);
+      if (Array.isArray(page.transcript)) {
+        allItems.push(...page.transcript);
+      }
+      cursor = page.hasMore ? page.cursor : null;
+    } while (cursor);
+
+    return allItems;
   }
 
   private async requestJson<T>(url: URL): Promise<T> {
